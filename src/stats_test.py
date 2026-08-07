@@ -3,12 +3,23 @@
 from scipy import stats
 
 ALPHA = 0.05  # 유의수준
+# float64가 표현할 수 있는 최소 양수는 약 5e-324라, 그보다 작은 p는 정확히 0.0으로 언더플로된다
+P_FLOOR_TEXT = "1e-308 미만 (float64 표현 한계)"
 
 
 def describe_numeric(df):
     # 수치형 기술통계(평균·표준편차·분위수)와 상관행렬 반환
     numeric = df.select_dtypes("number")
     return numeric.describe(), numeric.corr()
+
+
+def format_p(p):
+    # p=0은 "차이 없음"이 아니라 언더플로이므로 0.000000으로 찍지 않고 한계값으로 표기
+    if p == 0.0:
+        return P_FLOOR_TEXT
+    if p < 1e-4:
+        return f"{p:.3e}"
+    return f"{p:.6f}"
 
 
 def ttest_hours_by_income(df):
@@ -24,5 +35,7 @@ def ttest_hours_by_income(df):
         "mean_low": low.mean(),
         "t": t,
         "p": p,
+        "p_text": format_p(p),
+        "p_underflow": bool(p == 0.0),
         "significant": p < ALPHA,
     }

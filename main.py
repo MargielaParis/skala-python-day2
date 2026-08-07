@@ -95,7 +95,7 @@ if __name__ == "__main__":
     print(describe.round(1).iloc[:3])
     ttest = stats_test.ttest_hours_by_income(df_train)
     print(f"주당 근로시간: >50K {ttest['mean_high']:.1f} vs <=50K {ttest['mean_low']:.1f}")
-    print(f"t={ttest['t']:.3f}, p={ttest['p']:.6f}")
+    print(f"t={ttest['t']:.3f}, p={ttest['p_text']}")
     print(
         "-> 통계적으로 유의미한 차이 있음"
         if ttest["significant"]
