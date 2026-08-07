@@ -59,7 +59,7 @@ def write_report(file_path, loading, cleaning, loading_te, cleaning_te, describe
 
 ## 3. 통계 분석 (train 기준)
 - 주당 근로시간 평균: >50K {ttest["mean_high"]:.1f}시간 vs <=50K {ttest["mean_low"]:.1f}시간
-- t-test(Welch): t={ttest["t"]:.3f}, p={ttest["p"]:.6f} -> **{ttest_msg}**
+- t-test(Welch): t={ttest["t"]:.3f}, p={ttest["p_text"]} -> **{ttest_msg}**
 - 상관계수 예시: education-num vs hours-per-week = {corr_pair:.3f}
 - 수치형 기술통계
 

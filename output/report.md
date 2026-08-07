@@ -1,13 +1,13 @@
 # Adult Census Income — End2End 분석 리포트
 
-- 생성 일시: 2026-08-07 16:22
+- 생성 일시: 2026-08-07 17:02
 - 작성자: 박기연 (판교 7반)
 - 데이터 분할: UCI 공식 분할 사용 (`adult.data` 학습 / `adult.test` 평가, 랜덤 분할 없음)
 
 ## 1. 데이터 준비
-- 로딩 비교(train): Pandas 0.046초 vs Polars 0.041초
+- 로딩 비교(train): Pandas 0.038초 vs Polars 0.008초
   (32,561행 x 15컬럼, 두 도구 결과 동일)
-- 로딩 비교(test): Pandas 0.019초 vs Polars 0.003초
+- 로딩 비교(test): Pandas 0.020초 vs Polars 0.003초
   (16,281행 x 15컬럼, 두 도구 결과 동일)
 - 결측 컬럼(train): workclass(1836건), occupation(1843건), native-country(583건)
 - 결측 컬럼(test): workclass(963건), occupation(966건), native-country(274건)
@@ -31,7 +31,7 @@
 
 ## 3. 통계 분석 (train 기준)
 - 주당 근로시간 평균: >50K 45.7시간 vs <=50K 39.4시간
-- t-test(Welch): t=43.170, p=0.000000 -> **통계적으로 유의미한 차이 있음 (H0 기각)**
+- t-test(Welch): t=43.170, p=1e-308 미만 (float64 표현 한계) -> **통계적으로 유의미한 차이 있음 (H0 기각)**
 - 상관계수 예시: education-num vs hours-per-week = 0.153
 - 수치형 기술통계
 
@@ -59,41 +59,41 @@
 
 ### 4-1. 회귀계수 — 고소득 확률을 올리는 요인 (오즈비 = exp(계수))
 
-|                                   |    계수 |    오즈비 |
-|:----------------------------------|------:|-------:|
-| capital-gain                      | 2.328 | 10.258 |
-| marital-status_Married-AF-spouse  | 1.444 |  4.236 |
-| marital-status_Married-civ-spouse | 1.182 |  3.262 |
-| relationship_Wife                 | 1.099 |  3.001 |
-| native-country_Italy              | 1.051 |  2.859 |
-| native-country_Cambodia           | 0.908 |  2.479 |
-| occupation_Exec-managerial        | 0.842 |  2.322 |
-| education-num                     | 0.716 |  2.047 |
+|                                   |   계수 |   오즈비 |
+|:----------------------------------|-------:|---------:|
+| capital-gain                      |  2.328 |   10.258 |
+| marital-status_Married-AF-spouse  |  1.444 |    4.236 |
+| marital-status_Married-civ-spouse |  1.182 |    3.262 |
+| relationship_Wife                 |  1.099 |    3.001 |
+| native-country_Italy              |  1.051 |    2.859 |
+| native-country_Cambodia           |  0.908 |    2.479 |
+| occupation_Exec-managerial        |  0.842 |    2.322 |
+| education-num                     |  0.716 |    2.047 |
 
 ### 4-2. 고소득 확률을 내리는 요인
 
-|                              |     계수 |   오즈비 |
-|:-----------------------------|-------:|------:|
-| occupation_Priv-house-serv   | -1.431 | 0.239 |
-| native-country_Columbia      | -1.26  | 0.284 |
-| relationship_Own-child       | -1.165 | 0.312 |
-| marital-status_Never-married | -1.146 | 0.318 |
-| native-country_South         | -1.088 | 0.337 |
-| sex_Female                   | -0.997 | 0.369 |
-| occupation_Farming-fishing   | -0.954 | 0.385 |
-| native-country_Vietnam       | -0.848 | 0.428 |
+|                              |   계수 |   오즈비 |
+|:-----------------------------|-------:|---------:|
+| occupation_Priv-house-serv   | -1.431 |    0.239 |
+| native-country_Columbia      | -1.26  |    0.284 |
+| relationship_Own-child       | -1.165 |    0.312 |
+| marital-status_Never-married | -1.146 |    0.318 |
+| native-country_South         | -1.088 |    0.337 |
+| sex_Female                   | -0.997 |    0.369 |
+| occupation_Farming-fishing   | -0.954 |    0.385 |
+| native-country_Vietnam       | -0.848 |    0.428 |
 
 ### 4-3. sex·race 계수
 
-|                         |     계수 |   오즈비 |
-|:------------------------|-------:|------:|
-| race_Asian-Pac-Islander |  0.149 | 1.161 |
-| race_White              | -0.053 | 0.948 |
-| sex_Male                | -0.137 | 0.872 |
-| race_Black              | -0.154 | 0.857 |
-| race_Other              | -0.467 | 0.627 |
-| race_Amer-Indian-Eskimo | -0.61  | 0.544 |
-| sex_Female              | -0.997 | 0.369 |
+|                         |   계수 |   오즈비 |
+|:------------------------|-------:|---------:|
+| race_Asian-Pac-Islander |  0.149 |    1.161 |
+| race_White              | -0.053 |    0.948 |
+| sex_Male                | -0.137 |    0.872 |
+| race_Black              | -0.154 |    0.857 |
+| race_Other              | -0.467 |    0.627 |
+| race_Amer-Indian-Eskimo | -0.61  |    0.544 |
+| sex_Female              | -0.997 |    0.369 |
 
 계수는 다른 변수를 통제한 상태의 부분효과이므로, 위 3절 집계 비율과 부호가 다를 수 있다.
 sex_Female은 같은 학력·직업·근로시간이어도 고소득 오즈가 낮게 추정된다는 뜻이며,
