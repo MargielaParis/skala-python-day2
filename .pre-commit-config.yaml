@@ -1,0 +1,53 @@
+# 커밋 전 자동 검사: 포맷(black) -> 린트(ruff, flake8) -> 타입(mypy) -> 테스트(pytest)
+# 설치: pre-commit install
+default_language_version:
+  python: python3.11
+
+# main.py가 생성하는 산출물은 검사 대상에서 제외 (매번 재생성되므로)
+exclude: ^output/
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: no-commit-to-branch      # main 직접 커밋 차단 (브랜치 -> PR 흐름 강제)
+        args: [--branch, main]
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=5000]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.1
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+
+  - repo: https://github.com/psf/black
+    rev: 26.5.1
+    hooks:
+      - id: black
+
+  - repo: https://github.com/PyCQA/flake8
+    rev: 7.3.0
+    hooks:
+      - id: flake8
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v2.3.0
+    hooks:
+      - id: mypy
+        args: [--config-file=pyproject.toml]
+        additional_dependencies: [pandas-stubs, types-tabulate]
+
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest
+        entry: pytest
+        language: system
+        types: [python]
+        pass_filenames: false

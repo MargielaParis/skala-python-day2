@@ -1,0 +1,28 @@
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+# E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B bugbear, SIM simplify
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+ignore = [
+    "E501",  # 줄 길이는 black이 관리한다
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true      # pandas/polars/sklearn 등 스텁 없는 패키지 허용
+warn_unused_ignores = true
+warn_redundant_casts = true
+exclude = "^(output|data)/"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -11,7 +11,15 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 # fnlwgt(표본 가중치)·education(education-num과 중복)은 피처에서 제외
 NUM_COLS = ["age", "education-num", "capital-gain", "capital-loss", "hours-per-week"]
-CAT_COLS = ["workclass", "marital-status", "occupation", "relationship", "race", "sex", "native-country"]
+CAT_COLS = [
+    "workclass",
+    "marital-status",
+    "occupation",
+    "relationship",
+    "race",
+    "sex",
+    "native-country",
+]
 TARGET = "income"
 POSITIVE = ">50K"
 # 제외 컬럼: fnlwgt(표본 가중치, 개인 속성이 아님), education(education-num과 1:1 중복)
@@ -27,10 +35,12 @@ def coefficients(model):
 
 def build_pipeline():
     # 수치 스케일링 + 범주 원핫 + 로지스틱 회귀를 하나의 Pipeline으로 결합
-    preproc = ColumnTransformer([
-        ("num", StandardScaler(), NUM_COLS),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_COLS),
-    ])
+    preproc = ColumnTransformer(
+        [
+            ("num", StandardScaler(), NUM_COLS),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_COLS),
+        ]
+    )
     return Pipeline([("prep", preproc), ("clf", LogisticRegression(max_iter=1000))])
 
 
@@ -53,14 +63,23 @@ def train_and_evaluate(df_train, df_test, model_path):
         joblib.dump(model, model_path)
         reloaded = joblib.load(model_path)
     except OSError as e:
-        raise SystemExit(f"[오류] 모델 저장/로딩 실패: {e}")
+        raise SystemExit(f"[오류] 모델 저장/로딩 실패: {e}") from e
 
     if (reloaded.predict(X_test) != pred).any():
         raise SystemExit("[오류] 재로딩 모델의 예측이 원본과 다릅니다.")
 
     coef = coefficients(model)
-    return {"train": len(X_train), "test": len(X_test),
-            "train_pos_rate": y_train.mean(), "test_pos_rate": y_test.mean(),
-            "accuracy": acc, "f1": f1, "model_file": model_path.name,
-            "n_features": len(coef), "coef": coef,
-            "num_cols": NUM_COLS, "cat_cols": CAT_COLS, "dropped": DROPPED}
+    return {
+        "train": len(X_train),
+        "test": len(X_test),
+        "train_pos_rate": y_train.mean(),
+        "test_pos_rate": y_test.mean(),
+        "accuracy": acc,
+        "f1": f1,
+        "model_file": model_path.name,
+        "n_features": len(coef),
+        "coef": coef,
+        "num_cols": NUM_COLS,
+        "cat_cols": CAT_COLS,
+        "dropped": DROPPED,
+    }

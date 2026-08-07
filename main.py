@@ -46,14 +46,20 @@ print(f"Using data: {TRAIN_FILE.name} (train) / {TEST_FILE.name} (test)")
 def prepare(file_path, label):
     # 파일 하나를 로딩·정제하고 단계별 행 수를 출력해 (df, loading, cleaning) 반환
     df_raw, loading = load.load_compare(file_path)
-    print(f"[{label}] 로딩 {loading['rows']:,}행: "
-          f"Pandas {loading['pandas_sec']:.3f}초 / Polars {loading['polars_sec']:.3f}초")
+    print(
+        f"[{label}] 로딩 {loading['rows']:,}행: "
+        f"Pandas {loading['pandas_sec']:.3f}초 / Polars {loading['polars_sec']:.3f}초"
+    )
     df, cleaning = load.clean(df_raw)
     print(f"[{label}] 결측 컬럼: {cleaning['na_cols']}")
-    print(f"[{label}] 결측치 제거: {cleaning['raw']:,}행 -> {cleaning['after_na']:,}행 "
-          f"(제거 {cleaning['raw'] - cleaning['after_na']:,}행)")
-    print(f"[{label}] 중복 제거: {cleaning['after_na']:,}행 -> {cleaning['clean']:,}행 "
-          f"(제거 {cleaning['after_na'] - cleaning['clean']:,}행)")
+    print(
+        f"[{label}] 결측치 제거: {cleaning['raw']:,}행 -> {cleaning['after_na']:,}행 "
+        f"(제거 {cleaning['raw'] - cleaning['after_na']:,}행)"
+    )
+    print(
+        f"[{label}] 중복 제거: {cleaning['after_na']:,}행 -> {cleaning['clean']:,}행 "
+        f"(제거 {cleaning['after_na'] - cleaning['clean']:,}행)"
+    )
     return df, loading, cleaning
 
 
@@ -63,41 +69,50 @@ def prepare(file_path, label):
 if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
 
-    print('\n' + "=" * 80)
+    print("\n" + "=" * 80)
     print("\n1) 데이터 준비 — Pandas·Polars 로딩 비교 + 정제 (train/test 각각)")
     df_train, loading, cleaning = prepare(TRAIN_FILE, "train")
     print()
     df_test, loading_te, cleaning_te = prepare(TEST_FILE, "test")
 
-
     print("\n1) 기본 EDA (train 기준)")
     print(df_train.describe(include="all").iloc[:4, :6])
 
-    print('\n' + "=" * 80)
+    print("\n" + "=" * 80)
     print("\n2) 시각화 — Seaborn PNG + Plotly HTML (train 기준)")
     viz.save_seaborn_charts(df_train, CHART_FILE)
     viz.save_numeric_panels(df_train, NUM_CHART_FILE)
     viz.save_categorical_panels(df_train, CAT_CHART_FILE)
     viz.save_plotly_chart(df_train, HTML_FILE)
-    print(f"저장 완료 -> {CHART_FILE.name}, {NUM_CHART_FILE.name}, "
-          f"{CAT_CHART_FILE.name}, {HTML_FILE.name}")
+    print(
+        f"저장 완료 -> {CHART_FILE.name}, {NUM_CHART_FILE.name}, "
+        f"{CAT_CHART_FILE.name}, {HTML_FILE.name}"
+    )
 
-    print('\n' + "=" * 80)
+    print("\n" + "=" * 80)
     print("\n3) 통계 분석 — 기술통계·상관·t-test (train 기준)")
     describe, corr = stats_test.describe_numeric(df_train)
     print(describe.round(1).iloc[:3])
     ttest = stats_test.ttest_hours_by_income(df_train)
     print(f"주당 근로시간: >50K {ttest['mean_high']:.1f} vs <=50K {ttest['mean_low']:.1f}")
     print(f"t={ttest['t']:.3f}, p={ttest['p']:.6f}")
-    print("-> 통계적으로 유의미한 차이 있음" if ttest["significant"] else "-> 차이 없음 (우연일 수 있음)")
+    print(
+        "-> 통계적으로 유의미한 차이 있음"
+        if ttest["significant"]
+        else "-> 차이 없음 (우연일 수 있음)"
+    )
 
-    print('\n' + "=" * 80)
+    print("\n" + "=" * 80)
     print("\n4) ML Pipeline — adult.data 학습 / adult.test 평가·저장")
     metrics = ml.train_and_evaluate(df_train, df_test, MODEL_FILE)
-    print(f"피처: 수치 {len(metrics['num_cols'])}개 + 범주 {len(metrics['cat_cols'])}개"
-          f"(sex·race 포함) -> 원핫 후 {metrics['n_features']}개, 제외 {metrics['dropped']}")
-    print(f"학습 {metrics['train']:,}건 (>50K 비율 {metrics['train_pos_rate']:.3f}) / "
-          f"평가 {metrics['test']:,}건 (>50K 비율 {metrics['test_pos_rate']:.3f})")
+    print(
+        f"피처: 수치 {len(metrics['num_cols'])}개 + 범주 {len(metrics['cat_cols'])}개"
+        f"(sex·race 포함) -> 원핫 후 {metrics['n_features']}개, 제외 {metrics['dropped']}"
+    )
+    print(
+        f"학습 {metrics['train']:,}건 (>50K 비율 {metrics['train_pos_rate']:.3f}) / "
+        f"평가 {metrics['test']:,}건 (>50K 비율 {metrics['test_pos_rate']:.3f})"
+    )
     print(f"정확도 {metrics['accuracy']:.4f} / F1 {metrics['f1']:.4f}")
     print(f"[PASS] 모델 저장·재로딩 검증 -> {MODEL_FILE.name}")
 
@@ -111,11 +126,14 @@ if __name__ == "__main__":
     for name, row in coef.loc[coef.index.str.startswith(("sex_", "race_"))].iterrows():
         print(f"    {name:<32} {row['coef']:+.3f}  odds x{row['odds_ratio']:.2f}")
 
-    print('\n' + "=" * 80)
+    print("\n" + "=" * 80)
     print("\n5) 자동화 — report.md 생성")
-    report.write_report(REPORT_FILE, loading, cleaning, loading_te, cleaning_te,
-                        describe, corr, ttest, metrics)
+    report.write_report(
+        REPORT_FILE, loading, cleaning, loading_te, cleaning_te, describe, corr, ttest, metrics
+    )
     print(f"저장 완료 -> {REPORT_FILE.name}")
 
-    print(f"\nDone! 산출물: {CHART_FILE.name}, {NUM_CHART_FILE.name}, {CAT_CHART_FILE.name}, "
-          f"{HTML_FILE.name}, {MODEL_FILE.name}, {REPORT_FILE.name}")
+    print(
+        f"\nDone! 산출물: {CHART_FILE.name}, {NUM_CHART_FILE.name}, {CAT_CHART_FILE.name}, "
+        f"{HTML_FILE.name}, {MODEL_FILE.name}, {REPORT_FILE.name}"
+    )

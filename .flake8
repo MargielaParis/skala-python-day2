@@ -1,0 +1,5 @@
+[flake8]
+max-line-length = 100
+# E203/W503: black 포매팅과 충돌하는 규칙
+extend-ignore = E203, W503
+exclude = .git,__pycache__,.venv,venv,output,data

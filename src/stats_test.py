@@ -19,5 +19,10 @@ def ttest_hours_by_income(df):
         raise SystemExit("[오류] t-test 그룹이 비어 있습니다. income 값을 확인하세요.")
 
     t, p = stats.ttest_ind(high, low, equal_var=False)  # Welch: 등분산 가정 없음
-    return {"mean_high": high.mean(), "mean_low": low.mean(),
-            "t": t, "p": p, "significant": p < ALPHA}
+    return {
+        "mean_high": high.mean(),
+        "mean_low": low.mean(),
+        "t": t,
+        "p": p,
+        "significant": p < ALPHA,
+    }

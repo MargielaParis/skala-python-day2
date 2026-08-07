@@ -18,15 +18,42 @@ Adult Census Income(UCI) 데이터로 데이터 준비 → 시각화 → 통계 
 │   ├── stats_test.py       # 기술통계·상관계수·t-test
 │   ├── ml.py               # sklearn Pipeline 학습·평가·저장
 │   └── report.py           # report.md 자동 생성
+├── tests/                  # pytest 테스트 (원본 데이터 없이 실행 가능)
 ├── main.py                 # 전체 파이프라인 실행 진입점
 ├── output/                 # 차트·모델·리포트 산출물
-└── requirements.txt
+├── .pre-commit-config.yaml # 커밋 전 자동 검사 설정
+├── pyproject.toml          # black·ruff·mypy·pytest 설정
+├── .flake8                 # flake8 설정
+├── requirements.txt
+└── requirements-dev.txt    # 검사 도구
 ```
 
 ## 개발 환경 설정
 
 ```bash
 python3.11 -m pip install -r requirements.txt
+python3.11 -m pip install -r requirements-dev.txt
+pre-commit install          # 커밋 전 자동 검사 활성화
+```
+
+## 코드 품질 검사
+
+커밋할 때 `pre-commit`이 아래 순서로 자동 실행되고, 하나라도 실패하면 커밋이 중단된다.
+
+| 도구 | 역할 |
+|---|---|
+| `no-commit-to-branch` | `main` 직접 커밋 차단 (브랜치 -> PR 흐름 강제) |
+| `black` | 코드 포매팅 (line-length 100) |
+| `ruff` | 린트 + import 정렬 (E/W/F/I/UP/B/SIM) |
+| `flake8` | 추가 스타일 검사 |
+| `mypy` | 정적 타입 검사 |
+| `pytest` | 테스트 전체 실행 |
+
+전체 파일을 한 번에 검사하려면:
+
+```bash
+pre-commit run --all-files
+pytest                      # 테스트만 실행
 ```
 
 ## 데이터 준비

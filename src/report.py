@@ -3,21 +3,27 @@
 from datetime import datetime
 
 
-def write_report(file_path, loading, cleaning, loading_te, cleaning_te,
-                 describe, corr, ttest, ml):
+def write_report(file_path, loading, cleaning, loading_te, cleaning_te, describe, corr, ttest, ml):
     # 단계별 결과 dict를 받아 발표용 report.md를 생성
     corr_pair = corr.loc["education-num", "hours-per-week"]
     coef = ml["coef"]
     top = coef.tail(8)[::-1].rename(columns={"coef": "계수", "odds_ratio": "오즈비"})
     bottom = coef.head(8).rename(columns={"coef": "계수", "odds_ratio": "오즈비"})
-    demo = coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1] \
-               .rename(columns={"coef": "계수", "odds_ratio": "오즈비"})
-    ttest_msg = ("통계적으로 유의미한 차이 있음 (H0 기각)"
-                 if ttest["significant"] else "차이 없음 (우연일 수 있음)")
+    demo = coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1].rename(
+        columns={"coef": "계수", "odds_ratio": "오즈비"}
+    )
+    ttest_msg = (
+        "통계적으로 유의미한 차이 있음 (H0 기각)"
+        if ttest["significant"]
+        else "차이 없음 (우연일 수 있음)"
+    )
 
     n_num, n_cat, n_feat = len(ml["num_cols"]), len(ml["cat_cols"]), ml["n_features"]
-    num_cols, cat_cols, dropped = (", ".join(ml["num_cols"]), ", ".join(ml["cat_cols"]),
-                                   ", ".join(ml["dropped"]))
+    num_cols, cat_cols, dropped = (
+        ", ".join(ml["num_cols"]),
+        ", ".join(ml["cat_cols"]),
+        ", ".join(ml["dropped"]),
+    )
     top_md, bottom_md, demo_md = (t.round(3).to_markdown() for t in (top, bottom, demo))
 
     md = f"""# Adult Census Income — End2End 분석 리포트
@@ -99,4 +105,4 @@ sex_Female은 같은 학력·직업·근로시간이어도 고소득 오즈가 �
     try:
         file_path.write_text(md, encoding="utf-8")
     except OSError as e:
-        raise SystemExit(f"[오류] 리포트 저장 실패: {e}")
+        raise SystemExit(f"[오류] 리포트 저장 실패: {e}") from e

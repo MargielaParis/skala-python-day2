@@ -1,0 +1,8 @@
+# 개발용 도구 — 실행에는 필요 없고 검사(pre-commit)에만 쓴다
+# 설치: pip install -r requirements-dev.txt && pre-commit install
+pre-commit>=4.6
+pytest>=8.0
+black>=25.9
+ruff>=0.14
+flake8>=7.3
+mypy>=1.18
