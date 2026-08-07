@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# 가상환경
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# 원본 데이터 — 용량이 크고 README의 curl 명령으로 다시 내려받을 수 있다
+data/

@@ -1,0 +1,9 @@
+pandas>=3.0
+polars>=1.43
+matplotlib>=3.11
+seaborn>=0.13
+plotly>=6.9
+scikit-learn>=1.9
+scipy>=1.17
+joblib>=1.5
+tabulate>=0.9
