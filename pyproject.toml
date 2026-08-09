@@ -1,10 +1,10 @@
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 # E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B bugbear, SIM simplify
@@ -17,11 +17,19 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true      # pandas/polars/sklearn 등 스텁 없는 패키지 허용
 warn_unused_ignores = true
 warn_redundant_casts = true
-exclude = "^(output|data)/"
+# 가상환경은 우리 코드가 아니므로 검사 대상에서 제외한다
+exclude = "^(output|data|\\.venv|venv)"
+
+# 어노테이션이 없으면 mypy는 사실상 아무것도 검사하지 못한다.
+# 우리 코드(src/, main.py)에는 타입 힌트를 의무화한다. 테스트는 제외.
+[[tool.mypy.overrides]]
+module = ["src.*", "main"]
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

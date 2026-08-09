@@ -1,7 +1,9 @@
 # 커밋 전 자동 검사: 포맷(black) -> 린트(ruff, flake8) -> 타입(mypy) -> 테스트(pytest)
 # 설치: pre-commit install
+# 훅 환경은 pre-commit을 실행한 인터프리터(활성화된 venv)를 그대로 쓴다.
+# 특정 마이너 버전을 고정하면 그 버전이 없는 장비에서 훅 환경 생성 자체가 실패한다.
 default_language_version:
-  python: python3.11
+  python: python3
 
 # main.py가 생성하는 산출물은 검사 대상에서 제외 (매번 재생성되므로)
 exclude: ^output/

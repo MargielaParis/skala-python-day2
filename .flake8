@@ -2,4 +2,5 @@
 max-line-length = 100
 # E203/W503: black 포매팅과 충돌하는 규칙
 extend-ignore = E203, W503
-exclude = .git,__pycache__,.venv,venv,output,data
+# 가상환경은 이름이 .venv가 아닐 수 있으므로 glob으로 제외한다 (.venv312, venv314 등)
+exclude = .git,__pycache__,.venv*,venv*,env,output,data
