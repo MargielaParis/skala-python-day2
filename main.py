@@ -13,6 +13,11 @@ UCI 공식 분할본(data/raw/adult.data 학습, data/raw/adult.test 평가)을 
 
 실행 방법: python main.py  (세부 로직은 src/ 모듈 참조)
 
+변경내역
+2026-08-07 최초 작성. train/test는 UCI 공식 분할(adult.data/adult.test) 사용
+2026-08-07 차트 재설계, 전체 변수 플롯과 회귀계수(오즈비) 출력 추가
+2026-08-09 리뷰 반영. Pandas·Polars 동등성 검증, 카이제곱·효과크기, 계수 신뢰구간 추가
+
 작성자: 박기연 (판교 7반)
 """
 
