@@ -1,26 +1,43 @@
 """통계 분석 — 기술통계, 상관계수, t-test(p-value·효과크기), 성별×소득 카이제곱"""
 
+from typing import Any
+
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .errors import PipelineError
+from .load import CAPITAL_GAIN_CAP, POSITIVE
+
 ALPHA = 0.05  # 유의수준
 # float64가 표현할 수 있는 최소 양수는 약 5e-324라, 그보다 작은 p는 정확히 0.0으로 언더플로된다
 P_FLOOR_TEXT = "1e-308 미만 (float64 표현 한계)"
-POSITIVE = ">50K"
-# 원본에서 capital-gain은 99999로 상한 처리(top-coding)되어 있다. 실제 금액이 아니다
-CAPITAL_GAIN_CAP = 99999
 # sex와 거의 결정적으로 겹치는 relationship 범주 (Husband는 사실상 남성, Wife는 사실상 여성)
 GENDERED_ROLES = ("Husband", "Wife")
 
+__all__ = [
+    "ALPHA",
+    "CAPITAL_GAIN_CAP",
+    "GENDERED_ROLES",
+    "POSITIVE",
+    "P_FLOOR_TEXT",
+    "chisq_sex_income",
+    "cohens_d",
+    "data_caveats",
+    "describe_numeric",
+    "effect_label",
+    "format_p",
+    "ttest_hours_by_income",
+]
 
-def describe_numeric(df):
+
+def describe_numeric(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     # 수치형 기술통계(평균·표준편차·분위수)와 상관행렬 반환
     numeric = df.select_dtypes("number")
     return numeric.describe(), numeric.corr()
 
 
-def format_p(p):
+def format_p(p: float) -> str:
     # p=0은 "차이 없음"이 아니라 언더플로이므로 0.000000으로 찍지 않고 한계값으로 표기
     if p == 0.0:
         return P_FLOOR_TEXT
@@ -29,7 +46,7 @@ def format_p(p):
     return f"{p:.6f}"
 
 
-def cohens_d(a, b):
+def cohens_d(a: pd.Series, b: pd.Series) -> float:
     # pooled 표준편차 기준 표준화 평균차 — 표본이 크면 작은 차이도 유의해지므로 크기를 함께 본다.
     # 검정은 등분산을 가정하지 않는 Welch지만 효과크기는 관례대로 pooled SD를 쓴다.
     # 두 그룹의 분산이 크게 다르면 이 값은 참고치로만 읽어야 한다.
@@ -40,7 +57,7 @@ def cohens_d(a, b):
     return float((a.mean() - b.mean()) / pooled) if pooled else 0.0
 
 
-def effect_label(d):
+def effect_label(d: float) -> str:
     # Cohen(1988) 관례 구간 — 절대값 기준
     size = abs(d)
     if size < 0.2:
@@ -52,12 +69,12 @@ def effect_label(d):
     return "큼"
 
 
-def ttest_hours_by_income(df):
+def ttest_hours_by_income(df: pd.DataFrame) -> dict[str, Any]:
     # 소득 그룹(>50K vs <=50K) 간 주당 근로시간 평균 차이를 독립표본 t-test로 검정
     high = df.loc[df["income"] == POSITIVE, "hours-per-week"]
     low = df.loc[df["income"] == "<=50K", "hours-per-week"]
     if high.empty or low.empty:
-        raise SystemExit("[오류] t-test 그룹이 비어 있습니다. income 값을 확인하세요.")
+        raise PipelineError("t-test 그룹이 비어 있습니다. income 값을 확인하세요.")
 
     result = stats.ttest_ind(high, low, equal_var=False)  # Welch: 등분산 가정 없음
     t, p = float(result.statistic), float(result.pvalue)
@@ -79,7 +96,7 @@ def ttest_hours_by_income(df):
     }
 
 
-def data_caveats(df_train, df_test):
+def data_caveats(df_train: pd.DataFrame, df_test: pd.DataFrame) -> dict[str, Any]:
     # 결과를 읽을 때 반드시 함께 봐야 하는 데이터 한계를 매번 계산한다 (고정 문장으로 두지 않는다)
     role = pd.crosstab(df_train["sex"], df_train["relationship"])
     role_purity = {
@@ -101,11 +118,11 @@ def data_caveats(df_train, df_test):
     }
 
 
-def chisq_sex_income(df):
+def chisq_sex_income(df: pd.DataFrame) -> dict[str, Any]:
     # 실습 주제(성별과 소득의 관계)를 직접 검정 — 교차표 기반 카이제곱 독립성 검정
     table = pd.crosstab(df["sex"], df["income"])
     if table.shape[0] < 2 or table.shape[1] < 2:
-        raise SystemExit("[오류] 카이제곱 교차표가 2x2 미만입니다. sex/income 값을 확인하세요.")
+        raise PipelineError("카이제곱 교차표가 2x2 미만입니다. sex/income 값을 확인하세요.")
 
     # Yates 연속성 보정은 기대빈도가 작은 2x2를 위한 보수적 장치다. 이 데이터는 최소 기대빈도가
     # 2,400을 넘어 보정이 불필요하고, 보정하면 chi2와 Cramer's V가 실제보다 낮게 잡힌다.

@@ -1,13 +1,19 @@
 """시각화 — Seaborn 정적 차트(PNG), Plotly 인터랙티브 차트(HTML)"""
 
+from pathlib import Path
+from typing import Literal
+
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 import seaborn as sns
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib.patches import Patch
 from matplotlib.ticker import NullFormatter
+
+from .errors import PipelineError
 
 matplotlib.use("Agg")  # 파일 저장 전용 백엔드
 # 기호/한글 폴백 — macOS 우선, 없으면 Windows(Malgun Gothic)/Linux(Noto Sans CJK KR) 순
@@ -49,7 +55,7 @@ NUM_COLS = ["age", "education-num", "capital-gain", "capital-loss", "hours-per-w
 POSITIVE = ">50K"
 
 
-def _style(ax, title, grid_axis="y"):
+def _style(ax: plt.Axes, title: str, grid_axis: Literal["both", "x", "y"] | None = "y") -> None:
     # 격자·축을 배경 한 단계 위 헤어라인으로 낮추고 제목/눈금 색을 통일
     ax.set_title(title, fontsize=12, color=INK, pad=10, loc="left")
     ax.set_facecolor(SURFACE)
@@ -66,14 +72,16 @@ def _style(ax, title, grid_axis="y"):
     ax.yaxis.label.set_color(INK_SUB)
 
 
-def _high_ratio(df, col):
+def _high_ratio(df: pd.DataFrame, col: str) -> pd.DataFrame:
     # 지정 컬럼별 고소득 비율과 표본 수
-    return (
+    # 이름 붙인 agg는 DataFrame을 돌려주지만 pandas 스텁은 Series로 좁게 잡는다
+    agg = (
         df.assign(high=df["income"].eq(POSITIVE)).groupby(col)["high"].agg(ratio="mean", n="count")
     )
+    return pd.DataFrame(agg)
 
 
-def save_seaborn_charts(df, file_path):
+def save_seaborn_charts(df: pd.DataFrame, file_path: Path) -> None:
     # 소득 격차를 네 각도(연령·근로시간·직업·수치형 상관)에서 보여주는 PNG 저장
     fig, axes = plt.subplots(2, 2, figsize=(16, 11), facecolor=SURFACE)
     order = ["<=50K", POSITIVE]
@@ -175,12 +183,12 @@ def save_seaborn_charts(df, file_path):
     try:
         fig.savefig(file_path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
     except OSError as e:
-        raise SystemExit(f"[오류] 정적 차트 저장 실패: {e}") from e
+        raise PipelineError(f"정적 차트 저장 실패: {e}") from e
     finally:
         plt.close(fig)
 
 
-def save_plotly_chart(df, file_path):
+def save_plotly_chart(df: pd.DataFrame, file_path: Path) -> None:
     # 학력별 고소득 비율을 학력 순서대로 세운 인터랙티브 막대 차트로 HTML 저장
     ratio = _high_ratio(df, "education")
     order = df.groupby("education")["education-num"].first().sort_values()
@@ -239,7 +247,7 @@ def save_plotly_chart(df, file_path):
     try:
         fig.write_html(file_path)  # plotly.js 인라인 — 오프라인에서도 열림
     except OSError as e:
-        raise SystemExit(f"[오류] 인터랙티브 차트 저장 실패: {e}") from e
+        raise PipelineError(f"인터랙티브 차트 저장 실패: {e}") from e
 
 
 # =========================================================
@@ -256,7 +264,7 @@ CAT_LAYOUT = [
 FOLD_MIN, TOP_N = 20, 14  # 범주가 20개를 넘을 때만(native-country) 상위 14개 + 기타
 
 
-def _income_legend(fig, order, palette):
+def _income_legend(fig: plt.Figure, order: list[str], palette: dict[str, str]) -> None:
     # 패널마다 반복되는 범례를 그림 단위로 한 번만 둔다
     handles = [
         Patch(facecolor=palette[g], alpha=0.30, edgecolor=palette[g], linewidth=2, label=g)
@@ -273,7 +281,7 @@ def _income_legend(fig, order, palette):
     )
 
 
-def save_numeric_panels(df, file_path):
+def save_numeric_panels(df: pd.DataFrame, file_path: Path) -> None:
     # 수치형 6개 변수의 소득 그룹별 분포를 한 장에 저장
     order = ["<=50K", POSITIVE]
     palette = {"<=50K": LOW, POSITIVE: HIGH}
@@ -331,12 +339,12 @@ def save_numeric_panels(df, file_path):
     try:
         fig.savefig(file_path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
     except OSError as e:
-        raise SystemExit(f"[오류] 수치형 분포 차트 저장 실패: {e}") from e
+        raise PipelineError(f"수치형 분포 차트 저장 실패: {e}") from e
     finally:
         plt.close(fig)
 
 
-def _fold_rare(ratio, top_n=TOP_N):
+def _fold_rare(ratio: pd.DataFrame, top_n: int = TOP_N) -> pd.DataFrame:
     # 표본 수 상위 top_n개만 남기고 나머지는 가중평균 한 묶음으로
     if len(ratio) <= FOLD_MIN:
         return ratio
@@ -347,7 +355,7 @@ def _fold_rare(ratio, top_n=TOP_N):
     return keep
 
 
-def save_categorical_panels(df, file_path):
+def save_categorical_panels(df: pd.DataFrame, file_path: Path) -> None:
     # 범주형 8개 변수별 고소득 비율을 한 장에 저장 (값 순 정렬 + 전체 비율 기준선)
     ratios = {
         c: _fold_rare(_high_ratio(df, c)).sort_values("ratio") for row in CAT_LAYOUT for c in row
@@ -388,6 +396,6 @@ def save_categorical_panels(df, file_path):
     try:
         fig.savefig(file_path, dpi=150, bbox_inches="tight", facecolor=SURFACE)
     except OSError as e:
-        raise SystemExit(f"[오류] 범주형 비율 차트 저장 실패: {e}") from e
+        raise PipelineError(f"범주형 비율 차트 저장 실패: {e}") from e
     finally:
         plt.close(fig)

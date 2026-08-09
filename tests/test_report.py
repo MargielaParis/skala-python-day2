@@ -5,6 +5,7 @@ import copy
 import pytest
 
 from src import ml, report, stats_test
+from src.errors import PipelineError
 
 
 @pytest.fixture
@@ -42,6 +43,7 @@ def report_inputs(sample_df, tmp_path):
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
     ab = ml.compare_strategies({"drop": (sample_df, sample_df)})
     caveats = stats_test.data_caveats(sample_df, sample_df)
+    sensitivity = ml.sensitivity_without(sample_df, sample_df, "relationship")
     return {
         "loading": loading,
         "cleaning": cleaning,
@@ -54,6 +56,7 @@ def report_inputs(sample_df, tmp_path):
         "ml": metrics,
         "ab": ab,
         "caveats": caveats,
+        "sensitivity": sensitivity,
     }
 
 
@@ -194,8 +197,43 @@ def test_report_compares_missing_value_strategies(report_inputs, tmp_path):
     assert report.STRATEGY_LABEL["drop"] in md
 
 
-def test_write_report_exits_on_bad_path(report_inputs, tmp_path):
+def test_write_report_raises_on_bad_path(report_inputs, tmp_path):
     bad = tmp_path / "missing-dir" / "report.md"
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError, match="리포트 저장 실패"):
         report.write_report(bad, **report_inputs)
+
+
+def test_report_shows_confidence_intervals(report_inputs, tmp_path):
+    # 점추정만 보여주면 18행짜리 범주의 오즈비를 27,000행짜리와 같은 확신으로 읽게 된다
+    md = _render(report_inputs, tmp_path)
+
+    assert "오즈비 95% 구간" in md
+    assert "라플라스 근사" in md
+    assert "구간이 1을 포함하면" in md
+
+
+def test_report_includes_threshold_analysis(report_inputs, tmp_path):
+    md = _render(report_inputs, tmp_path)
+    tuned = report_inputs["ml"]["thresholds"]["tuned"]
+
+    assert "## 4. ML Pipeline" in md and "4-2. 분류 임계값" in md
+    assert "PR-AUC" in md
+    assert f"{tuned['threshold']:.3f}" in md
+
+
+def test_report_includes_sensitivity_section(report_inputs, tmp_path):
+    md = _render(report_inputs, tmp_path)
+
+    assert "민감도 분석" in md
+    assert report_inputs["sensitivity"]["excluded"] in md
+
+
+def test_conclusion_follows_sensitivity_result(report_inputs, tmp_path):
+    # 민감도 결과도 고정 문장이 아니라 입력에서 파생돼야 한다
+    changed = copy.deepcopy(report_inputs)
+    changed["sensitivity"]["coef"]["odds_ratio"] = 0.777
+
+    md = _render(changed, tmp_path, "sens.md")
+
+    assert "0.777" in md

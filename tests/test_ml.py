@@ -9,7 +9,7 @@ def test_split_xy_excludes_dropped_columns(sample_df):
     X, y = ml.split_xy(sample_df)
 
     assert not set(ml.DROPPED) & set(X.columns)
-    assert list(X.columns) == ml.NUM_COLS + ml.CAT_COLS
+    assert list(X.columns) == ml.NUM_COLS + ml.CAT_COLS + ml.FLAG_COLS
     assert set(y.unique()) == {0, 1}
 
 
@@ -42,7 +42,7 @@ def test_coefficients_include_onehot_names(sample_df, tmp_path):
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
     coef = metrics["coef"]
 
-    assert list(coef.columns) == ["coef", "odds_ratio"]
+    assert list(coef.columns) == ["coef", "se", "odds_ratio", "or_low", "or_high"]
     assert any(name.startswith("sex_") for name in coef.index)
     assert coef["coef"].is_monotonic_increasing  # 계수 오름차순 정렬
 
@@ -110,3 +110,72 @@ def test_compare_strategies_scores_each_dataset(sample_df):
 
     assert set(scores) == {"a", "b"}
     assert scores["a"]["f1"] == scores["b"]["f1"]
+
+
+def test_capital_gain_cap_becomes_its_own_flag(sample_df):
+    # 99999는 실제 금액이 아니라 상한 표기이므로 금액과 분리해 지시변수로 넣는다
+    capped = sample_df.copy()
+    capped.loc[capped.index[:3], "capital-gain"] = ml.CAPITAL_GAIN_CAP
+
+    X, _ = ml.split_xy(capped)
+
+    assert ml.CAP_FLAG in X.columns
+    assert X[ml.CAP_FLAG].sum() == 3
+    assert set(X[ml.CAP_FLAG].unique()) <= {0, 1}
+
+
+def test_flag_is_not_standardised(sample_df, tmp_path):
+    # 지시변수를 스케일링하면 계수를 "0 -> 1일 때"로 읽을 수 없다
+    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
+
+    assert metrics["flag_cols"] == [ml.CAP_FLAG]
+    assert set(metrics["numeric_scales"]) == set(ml.NUM_COLS)
+    assert ml.CAP_FLAG not in metrics["numeric_scales"]
+
+
+def test_coefficient_stats_report_uncertainty(sample_df, tmp_path):
+    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
+    coef = metrics["coef"]
+
+    assert list(coef.columns) == ["coef", "se", "odds_ratio", "or_low", "or_high"]
+    assert (coef["se"] > 0).all()
+    assert (coef["or_low"] < coef["odds_ratio"]).all()
+    assert (coef["odds_ratio"] < coef["or_high"]).all()
+
+
+def test_wider_interval_for_rarer_category(sample_df, tmp_path):
+    # 표본이 적은 범주일수록 구간이 넓어야 한다
+    df = sample_df.copy()
+    df.loc[df.index[:2], "workclass"] = "Rare-class"
+    metrics = ml.train_and_evaluate(df, df, tmp_path / "pipeline.pkl")
+    coef = metrics["coef"]
+
+    rare = coef.loc["workclass_Rare-class", "se"]
+    common = coef.loc[[i for i in coef.index if i.startswith("occupation_")][0], "se"]
+    assert rare > common
+
+
+def test_metrics_include_pr_auc(sample_df, tmp_path):
+    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
+
+    assert 0.0 <= metrics["pr_auc"] <= 1.0
+
+
+def test_threshold_analysis_tunes_on_train_not_test(sample_df, tmp_path):
+    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
+    thresholds = metrics["thresholds"]
+
+    assert thresholds["default"]["threshold"] == 0.5
+    assert 0.0 <= thresholds["tuned"]["threshold"] <= 1.0
+    # 학습셋에서 F1을 최대화한 임계값이므로 학습셋 F1은 기본값 이상이어야 한다
+    assert thresholds["tuned"]["f1"] >= thresholds["default"]["f1"] - 1e-9
+
+
+def test_sensitivity_without_refits_without_the_column(sample_df, tmp_path):
+    result = ml.sensitivity_without(sample_df, sample_df, "relationship")
+
+    assert result["excluded"] == "relationship"
+    assert result["focus"] == "sex"
+    assert not any(name.startswith("relationship_") for name in result["coef"].index)
+    assert all(name.startswith("sex_") for name in result["coef"].index)
+    assert result["reference"] in set(sample_df["sex"])

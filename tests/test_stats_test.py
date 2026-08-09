@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from src import stats_test
+from src.errors import PipelineError
 
 
 def test_describe_numeric_uses_only_numeric_columns(sample_df):
@@ -24,10 +25,10 @@ def test_ttest_detects_hours_gap(sample_df):
     assert bool(result["significant"]) is True
 
 
-def test_ttest_exits_when_group_empty(sample_df):
+def test_ttest_raises_when_group_empty(sample_df):
     only_low = sample_df[sample_df["income"] == "<=50K"]
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError):
         stats_test.ttest_hours_by_income(only_low)
 
 
@@ -105,10 +106,10 @@ def test_chisq_sex_income_finds_no_association_when_balanced():
     assert result["cramers_v"] == pytest.approx(0.0)
 
 
-def test_chisq_exits_when_table_is_degenerate(sample_df):
+def test_chisq_raises_when_table_is_degenerate(sample_df):
     one_sex = sample_df[sample_df["sex"] == "Male"].assign(income="<=50K")
 
-    with pytest.raises(SystemExit):
+    with pytest.raises(PipelineError):
         stats_test.chisq_sex_income(one_sex)
 
 

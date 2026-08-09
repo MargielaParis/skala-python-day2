@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from src import load
+from src.errors import PipelineError
 
 
 def test_load_compare_reads_both_engines(raw_csv):
@@ -28,8 +29,9 @@ def test_load_compare_treats_question_mark_as_na(raw_csv):
     assert df["occupation"].isna().sum() == 1
 
 
-def test_load_compare_missing_file_exits(tmp_path):
-    with pytest.raises(SystemExit):
+def test_load_compare_missing_file_raises_pipeline_error(tmp_path):
+    # src/ 모듈은 프로세스를 죽이지 않고 예외를 올린다. 종료 코드는 main.py가 정한다
+    with pytest.raises(PipelineError, match="찾을 수 없습니다"):
         load.load_compare(tmp_path / "nope.data")
 
 

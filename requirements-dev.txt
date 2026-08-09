@@ -6,3 +6,6 @@ black>=25.9
 ruff>=0.14
 flake8>=7.3
 mypy>=1.18
+# pre-commit의 mypy 훅과 같은 스텁을 로컬에서도 써야 검사 강도가 같아진다
+pandas-stubs>=2.2
+types-tabulate>=0.9

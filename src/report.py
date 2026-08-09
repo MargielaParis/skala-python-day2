@@ -5,11 +5,17 @@
 """
 
 from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+
+from .errors import PipelineError
 
 STRATEGY_LABEL = {"drop": "결측 행 삭제(dropna)", "unknown": "범주형 결측을 Unknown으로 보존"}
 
 
-def _equality_text(loading):
+def _equality_text(loading: dict[str, Any]) -> str:
     # "두 도구 결과 동일"을 실제 비교 결과에서만 만든다
     eq = loading["equality"]
     if eq.get("identical"):
@@ -22,16 +28,26 @@ def _equality_text(loading):
     return "불일치 있음 — " + ", ".join(parts)
 
 
-def _reference_note(reference):
+def _reference_note(reference: dict[str, Any]) -> str:
     # 원핫에서 빠진 기준 범주 목록 — 모든 범주형 계수는 이 기준 대비 값이다
     return ", ".join(f"{col}={ref}" for col, ref in reference.items() if ref is not None)
 
 
-def _annotate(coef_slice, reference, counts, n_train):
-    # 각 계수가 무엇과 비교된 값인지(기준 범주 / 1 표준편차)와 그 대비를 만든 표본 수를 함께 적는다.
-    # 표본 수가 없으면 18행짜리 범주의 오즈비가 27,000행짜리 범주와 똑같이 단정적으로 보인다.
+def _annotate(
+    coef_slice: pd.DataFrame,
+    reference: dict[str, Any],
+    counts: dict[str, dict[Any, int]],
+    n_train: int,
+    flag_cols: list[str],
+) -> str:
+    # 각 계수가 무엇과 비교된 값인지, 그 대비를 만든 표본 수, 신뢰구간을 함께 적는다.
+    # 표본 수와 구간이 없으면 18행짜리 범주의 오즈비가 27,000행짜리와 똑같이 단정적으로 보인다.
     basis, sizes = [], []
     for name in coef_slice.index:
+        if name in flag_cols:
+            basis.append("지시변수 0 -> 1")
+            sizes.append(f"{n_train:,}")
+            continue
         feature = next((c for c in reference if name.startswith(f"{c}_")), None)
         if feature is None:
             basis.append("1 표준편차 증가")
@@ -41,18 +57,32 @@ def _annotate(coef_slice, reference, counts, n_train):
         basis.append(f"기준 {feature}={reference[feature]}")
         ref_n = counts.get(feature, {}).get(reference[feature], 0)
         sizes.append(f"{counts.get(feature, {}).get(level, 0):,} / 기준 {ref_n:,}")
-    table = coef_slice.assign(**{"비교 기준": basis, "학습 표본": sizes})
-    return table.rename(columns={"coef": "계수", "odds_ratio": "오즈비"}).round(3).to_markdown()
+
+    table = pd.DataFrame(
+        {
+            "계수": coef_slice["coef"].round(3),
+            "오즈비": coef_slice["odds_ratio"].round(3),
+            "오즈비 95% 구간": [
+                f"[{low:.3f}, {high:.3f}]"
+                for low, high in zip(coef_slice["or_low"], coef_slice["or_high"], strict=True)
+            ],
+            "비교 기준": basis,
+            "학습 표본": sizes,
+        },
+        index=coef_slice.index,
+    )
+    return str(table.to_markdown())
 
 
-def _sex_contrast(coef, reference):
+def _sex_contrast(coef: pd.DataFrame, reference: dict[str, Any]) -> str:
     # 성별 계수를 "기준 대비 오즈비" 문장으로 파생 (고정 숫자를 쓰지 않기 위함)
     ref = reference.get("sex")
     rows = coef.loc[coef.index.str.startswith("sex_")]
     if ref is None or rows.empty:
         return "sex 계수가 모델에 없어 성별 대비를 계산하지 않았다."
     parts = [
-        f"{name.split('_', 1)[1]}는 기준({ref}) 대비 오즈 {row['odds_ratio']:.3f}배"
+        f"{str(name).split('_', 1)[1]}는 기준({ref}) 대비 오즈 {row['odds_ratio']:.3f}배"
+        f"(95% 구간 [{row['or_low']:.3f}, {row['or_high']:.3f}])"
         for name, row in rows.iterrows()
     ]
     return (
@@ -62,7 +92,7 @@ def _sex_contrast(coef, reference):
     )
 
 
-def _confusion_md(cm, positive=">50K"):
+def _confusion_md(cm: dict[str, int], positive: str = ">50K") -> str:
     return "\n".join(
         [
             f"| 실제 \\ 예측 | <=50K | {positive} |",
@@ -73,19 +103,47 @@ def _confusion_md(cm, positive=">50K"):
     )
 
 
-def _strategy_md(ab):
-    header = "| 결측 전략 | 학습 행 수 | 평가 행 수 | 정확도 | 정밀도 | 재현율 | F1 | ROC-AUC |"
-    rows = [header, "|---|---:|---:|---:|---:|---:|---:|---:|"]
-    for name, m in ab.items():
+def _threshold_md(thresholds: dict[str, Any]) -> str:
+    header = "| 임계값 | 정확도 | 정밀도 | 재현율 | F1 | 놓친 고소득(FN) | 잘못 잡은 저소득(FP) |"
+    rows = [header, "|---|---:|---:|---:|---:|---:|---:|"]
+    for label, key in (("기본값", "default"), ("학습셋 F1 최적", "tuned")):
+        m = thresholds[key]
         rows.append(
-            f"| {STRATEGY_LABEL.get(name, name)} | {m['train']:,} | {m['test']:,} | "
-            f"{m['accuracy']:.4f} | {m['precision']:.4f} | {m['recall']:.4f} | "
-            f"{m['f1']:.4f} | {m['roc_auc']:.4f} |"
+            f"| {label} {m['threshold']:.3f} | {m['accuracy']:.4f} | {m['precision']:.4f} | "
+            f"{m['recall']:.4f} | {m['f1']:.4f} | {m['confusion']['fn']:,} | "
+            f"{m['confusion']['fp']:,} |"
         )
     return "\n".join(rows)
 
 
-def _na_impact_md(cleaning, cleaning_te):
+def _sensitivity_md(sensitivity: dict[str, Any]) -> str:
+    rows = [
+        f"| {sensitivity['focus']} 계수 | 오즈비 | 오즈비 95% 구간 |",
+        "|---|---:|---|",
+    ]
+    for name, row in sensitivity["coef"].iterrows():
+        rows.append(
+            f"| {name} | {row['odds_ratio']:.3f} | "
+            f"[{row['or_low']:.3f}, {row['or_high']:.3f}] |"
+        )
+    return "\n".join(rows)
+
+
+def _strategy_md(ab: dict[str, Any]) -> str:
+    header = (
+        "| 결측 전략 | 학습 행 수 | 평가 행 수 | 정확도 | 정밀도 | 재현율 | F1 | ROC-AUC | PR-AUC |"
+    )
+    rows = [header, "|---|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for name, m in ab.items():
+        rows.append(
+            f"| {STRATEGY_LABEL.get(name, name)} | {m['train']:,} | {m['test']:,} | "
+            f"{m['accuracy']:.4f} | {m['precision']:.4f} | {m['recall']:.4f} | "
+            f"{m['f1']:.4f} | {m['roc_auc']:.4f} | {m['pr_auc']:.4f} |"
+        )
+    return "\n".join(rows)
+
+
+def _na_impact_md(cleaning: dict[str, Any], cleaning_te: dict[str, Any]) -> str:
     header = "| 구분 | 소득 그룹 | 원본 행 | 결측 행 | 제거율 |"
     rows = [header, "|---|---|---:|---:|---:|"]
     for label, info in (("train", cleaning), ("test", cleaning_te)):
@@ -98,7 +156,13 @@ def _na_impact_md(cleaning, cleaning_te):
     return "\n".join(rows)
 
 
-def _conclusions(ttest, chisq, ml, ab):
+def _conclusions(
+    ttest: dict[str, Any],
+    chisq: dict[str, Any],
+    ml: dict[str, Any],
+    ab: dict[str, Any],
+    sensitivity: dict[str, Any],
+) -> str:
     # 결론은 전부 입력에서 파생한다 — 입력이 바뀌면 이 문장들도 함께 바뀐다
     coef, reference = ml["coef"], ml["reference"]
     strongest = coef["coef"].abs().idxmax()
@@ -106,6 +170,7 @@ def _conclusions(ttest, chisq, ml, ab):
     rates = ", ".join(f"{k} {v:.1%}" for k, v in chisq["rate_by_sex"].items())
     best = max(ab, key=lambda k: ab[k]["f1"]) if ab else None
     cm = ml["confusion"]
+    tuned = ml["thresholds"]["tuned"]
 
     lines = [
         f"- 성별과 소득은 카이제곱 검정에서 "
@@ -117,13 +182,18 @@ def _conclusions(ttest, chisq, ml, ab):
         f"Cohen's d={ttest['cohens_d']:.3f}({ttest['effect']})로 "
         f"{'통계적으로 유의미한 차이가 있다' if ttest['significant'] else '유의미한 차이가 없다'}.",
         f"- 계수 절대값이 가장 큰 항은 `{strongest}`이며 "
-        f"계수 {strongest_row['coef']:+.3f}, 오즈비 {strongest_row['odds_ratio']:.3f}다. "
-        f"범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이며, "
-        f"계수 크기만으로 중요도를 단정할 수는 없다(표준오차 미산출).",
+        f"계수 {strongest_row['coef']:+.3f}, 오즈비 {strongest_row['odds_ratio']:.3f} "
+        f"(95% 구간 [{strongest_row['or_low']:.3f}, {strongest_row['or_high']:.3f}])다. "
+        f"범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이다.",
         f"- {_sex_contrast(coef, reference)}",
+        f"- `{sensitivity['excluded']}`를 빼고 다시 학습하면 {_sensitivity_summary(sensitivity)}",
         f"- 평가 성능은 정확도 {ml['accuracy']:.4f}, 정밀도 {ml['precision']:.4f}, "
-        f"재현율 {ml['recall']:.4f}, F1 {ml['f1']:.4f}, ROC-AUC {ml['roc_auc']:.4f}다. "
-        f"실제 고소득 {cm['tp'] + cm['fn']:,}명 중 {cm['fn']:,}명을 저소득으로 놓쳤다.",
+        f"재현율 {ml['recall']:.4f}, F1 {ml['f1']:.4f}, ROC-AUC {ml['roc_auc']:.4f}, "
+        f"PR-AUC {ml['pr_auc']:.4f}다. 실제 고소득 {cm['tp'] + cm['fn']:,}명 중 "
+        f"{cm['fn']:,}명을 저소득으로 놓쳤다.",
+        f"- 임계값을 학습셋 F1 최적값 {tuned['threshold']:.3f}으로 바꾸면 재현율이 "
+        f"{ml['recall']:.4f}에서 {tuned['recall']:.4f}로, 놓친 고소득이 "
+        f"{cm['fn']:,}명에서 {tuned['confusion']['fn']:,}명으로 바뀐다.",
     ]
     if best:
         lines.append(
@@ -133,30 +203,51 @@ def _conclusions(ttest, chisq, ml, ab):
     return "\n".join(lines)
 
 
+def _sensitivity_summary(sensitivity: dict[str, Any]) -> str:
+    rows = sensitivity["coef"]
+    if rows.empty:
+        return f"`{sensitivity['focus']}` 계수를 계산할 수 없었다."
+    parts = [
+        f"{name}의 오즈비가 {row['odds_ratio']:.3f}"
+        f"(95% 구간 [{row['or_low']:.3f}, {row['or_high']:.3f}])"
+        for name, row in rows.iterrows()
+    ]
+    return (
+        ", ".join(parts)
+        + f"가 된다 (기준 {sensitivity['focus']}={sensitivity['reference']}, "
+        + f"정확도 {sensitivity['accuracy']:.4f})."
+    )
+
+
 def write_report(
-    file_path,
+    file_path: Path,
     *,
-    loading,
-    cleaning,
-    loading_te,
-    cleaning_te,
-    describe,
-    corr,
-    ttest,
-    chisq,
-    ml,
-    ab,
-    caveats,
-):
+    loading: dict[str, Any],
+    cleaning: dict[str, Any],
+    loading_te: dict[str, Any],
+    cleaning_te: dict[str, Any],
+    describe: pd.DataFrame,
+    corr: pd.DataFrame,
+    ttest: dict[str, Any],
+    chisq: dict[str, Any],
+    ml: dict[str, Any],
+    ab: dict[str, Any],
+    caveats: dict[str, Any],
+    sensitivity: dict[str, Any],
+) -> None:
     # 단계별 결과를 받아 발표용 report.md를 생성
     corr_pair = corr.loc["education-num", "hours-per-week"]
     coef = ml["coef"]
     reference = ml["reference"]
-    counts, n_train = ml["category_counts"], ml["train"]
-    top_md = _annotate(coef.tail(8)[::-1], reference, counts, n_train)
-    bottom_md = _annotate(coef.head(8), reference, counts, n_train)
+    counts, n_train, flags = ml["category_counts"], ml["train"], ml["flag_cols"]
+    top_md = _annotate(coef.tail(8)[::-1], reference, counts, n_train, flags)
+    bottom_md = _annotate(coef.head(8), reference, counts, n_train, flags)
     demo_md = _annotate(
-        coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1], reference, counts, n_train
+        coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1],
+        reference,
+        counts,
+        n_train,
+        flags,
     )
 
     ttest_msg = (
@@ -182,13 +273,17 @@ def write_report(
     strategy_label = STRATEGY_LABEL.get(cleaning["strategy"], cleaning["strategy"])
     sex_rates = ", ".join(f"{k} {v:.1%}" for k, v in chisq["rate_by_sex"].items())
     chisq_stats = (
-        f"chi2={chisq['chi2']:.3f}, 자유도={chisq['dof']}, "
-        f"n={chisq['n']:,}, p={chisq['p_text']}"
+        f"chi2={chisq['chi2']:.3f}, 자유도={chisq['dof']}, n={chisq['n']:,}, p={chisq['p_text']}"
     )
     role_purity = ", ".join(f"{role} {share:.1%}" for role, share in caveats["role_purity"].items())
     cg_cap = (
         f"{caveats['capital_gain_capped']:,}행이 상한값 {caveats['capital_gain_cap']:,}이고 "
         f"그중 고소득 비율은 {caveats['capital_gain_capped_pos_rate']:.1%}"
+    )
+    flag_note = ", ".join(ml["flag_cols"])
+    feature_summary = (
+        f"수치형 {n_num}개 + 지시변수 {len(ml['flag_cols'])}개 + "
+        f"범주형 {n_cat}개(sex·race 포함), 원핫 인코딩 후 {n_feat}개"
     )
 
     md = f"""# Adult Census Income — End2End 분석 리포트
@@ -248,10 +343,10 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
   평가가 낙관적으로 치우칠 수 있다. 이번 파이프라인은 이 행들을 제거하지 않았다.
 - **`capital-gain`은 상한 처리된 값이다.** 학습 데이터에서 0인 비율이
   {caveats["capital_gain_zero_share"]:.1%}이고, {cg_cap}다. 상한값은 실제 금액이 아니라
-  "그 이상"을 뜻하는 표기이므로, 이 변수의 큰 계수를 금액 효과로 읽으면 안 된다.
+  "그 이상"을 뜻하는 표기이므로, 금액과 상한 도달을 분리하려고 `{flag_note}` 지시변수를 따로 넣었다.
 - **`relationship`은 `sex`와 거의 겹친다.** 성별 편중도 — {role_purity}.
   `relationship`을 함께 통제한 상태의 성별 계수는 "가구 내 역할을 고정했을 때의 차이"이므로,
-  성별 전체 격차는 3-1절의 교차표와 카이제곱으로 읽어야 한다.
+  성별 전체 격차는 3-1절의 교차표와 카이제곱으로, 통제 의존도는 4-8절의 민감도 분석으로 읽어야 한다.
 
 ## 2. 시각화 (train 기준)
 - `output/eda_charts.png` — 핵심 4패널: 연령 분포, 근로시간 박스플롯, 직업별 고소득 비율, 수치형 상관
@@ -281,7 +376,8 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
   (차이 {ttest["diff"]:+.2f}시간, 95% CI [{ttest["ci_low"]:.2f}, {ttest["ci_high"]:.2f}])
 - t={ttest["t"]:.3f}, p={ttest["p_text"]} -> **{ttest_msg}**
 - Cohen's d={ttest["cohens_d"]:.3f} ({ttest["effect"]}) — 표본이 크면 작은 차이도 유의해지므로
-  유의성과 함께 효과크기를 본다.
+  유의성과 함께 효과크기를 본다. 검정은 등분산을 가정하지 않는 Welch지만 효과크기는 관례대로
+  pooled 표준편차를 쓴다.
 
 ### 3-3. 기술통계·상관
 - 상관계수 예시: education-num vs hours-per-week = {corr_pair:.3f}
@@ -289,9 +385,11 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 {describe.round(2).to_markdown()}
 
 ## 4. ML Pipeline (소득 >50K 로지스틱 회귀)
-- 구성: StandardScaler + OneHotEncoder(drop="first") -> LogisticRegression (단일 Pipeline)
-- 피처: 수치형 {n_num}개 + 범주형 {n_cat}개(sex·race 포함) -> 원핫 인코딩 후 {n_feat}개
+- 구성: StandardScaler + 상한 지시변수 passthrough + OneHotEncoder(기준 범주 제외)
+  -> LogisticRegression (단일 Pipeline)
+- 피처: {feature_summary}
   - 수치형: {num_cols}
+  - 지시변수: {flag_note}
   - 범주형: {cat_cols}
   - 제외: {dropped} (fnlwgt는 표본 가중치, education은 education-num과 1:1 중복)
 - 학습(adult.data) {ml["train"]:,}건 / 평가(adult.test) {ml["test"]:,}건
@@ -307,8 +405,11 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 | 재현율 (recall) | {ml["recall"]:.4f} |
 | F1 | {ml["f1"]:.4f} |
 | ROC-AUC | {ml["roc_auc"]:.4f} |
+| PR-AUC (average precision) | {ml["pr_auc"]:.4f} |
 
-고소득 표본이 적어 정확도만으로는 실제 고소득자를 얼마나 놓쳤는지 알 수 없다. 혼동행렬로 확인한다.
+양성(고소득)이 드물기 때문에 ROC-AUC는 낙관적으로 보일 수 있다. 양성 비율이
+{ml["test_pos_rate"]:.3f}이므로 아무 정보 없이 찍는 분류기의 PR-AUC 기준선이 그 값이다.
+정확도만으로는 실제 고소득자를 얼마나 놓쳤는지 알 수 없으니 혼동행렬로 확인한다.
 
 {_confusion_md(ml["confusion"])}
 
@@ -317,12 +418,21 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 - 실제 저소득 {ml["confusion"]["tn"] + ml["confusion"]["fp"]:,}명 중
   {ml["confusion"]["fp"]:,}명을 고소득으로 잘못 예측했다.
 
-### 4-2. 결측 처리 방식 A/B 비교
+### 4-2. 분류 임계값
+기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 **학습셋에서** 찾아 평가셋에 적용했다
+(평가셋에서 고르면 그 자체가 평가셋에 대한 과적합이다).
+
+{_threshold_md(ml["thresholds"])}
+
+어떤 임계값이 맞는지는 "고소득자를 놓치는 비용"과 "저소득자를 고소득으로 잘못 잡는 비용" 중
+어느 쪽이 큰지에 달려 있고, 그 판단은 데이터가 아니라 용도에서 나온다.
+
+### 4-3. 결측 처리 방식 A/B 비교
 같은 Pipeline으로 결측 처리만 바꿔 학습·평가한 결과다.
 
 {_strategy_md(ab)}
 
-### 4-3. 계수 해석의 전제
+### 4-4. 계수 해석의 전제
 - 범주형: 각 변수에서 기준 범주 하나를 빼고 원핫했다. 남은 계수는 **그 기준 범주 대비**
   조건부 오즈비 `exp(beta)`다.
   - 기준 선정 규칙 — {ml["reference_rule"]}
@@ -330,37 +440,48 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
   - 사전순 첫 범주(`drop="first"`)를 쓰면 `native-country`의 기준이 학습 18행짜리 범주가 되어
     나머지 40개 대비가 모두 불안정해진다. 그래서 표본 최다 범주를 기준으로 삼았다.
   - `LogisticRegression`은 기본이 L2 정규화라 기준 범주를 바꾸면 계수뿐 아니라 예측도 미세하게
-    달라진다(정규화가 "계수 0"을 기준 범주 대비 0으로 해석하기 때문). 지표를 비교할 때는
-    기준 범주 규칙이 같은지 확인해야 한다.
+    달라진다. 지표를 비교할 때는 기준 범주 규칙이 같은지 확인해야 한다.
 - 수치형: StandardScaler 적용 후 계수이므로 **1 표준편차 증가 기준**이다.
   1 표준편차 크기 — {scales}
+- 지시변수(`{flag_note}`)는 스케일링하지 않아 계수를 **0에서 1로 바뀔 때**로 그대로 읽는다.
+- **오즈비 95% 구간**은 L2 정규화를 가우시안 사전분포로 본 라플라스 근사에서 얻은 값이다
+  (사후 정밀도 `Z'WZ + I/C`). 정확한 Wald 신뢰구간이 아니고, 정규화 때문에 계수 자체도
+  0 쪽으로 수축돼 있다. 구간이 1을 포함하면 방향조차 단정할 수 없다는 뜻으로 읽으면 된다.
 - `handle_unknown="ignore"`이므로 학습에 없던 범주는 전부 0으로 인코딩되어 기준 범주와 구분되지 않는다.
 - 계수는 다른 변수를 통제한 상태의 부분효과라 3절의 단순 집계 비율과 부호가 다를 수 있다.
-- 아래 표의 `학습 표본`은 해당 범주와 기준 범주의 학습 행 수다. 표본이 적은 범주의 오즈비는
-  신뢰구간이 넓어 순위를 그대로 읽으면 안 된다. 이 리포트는 계수의 표준오차를 계산하지 않는다.
+- `학습 표본`은 해당 범주와 기준 범주의 학습 행 수다. 표본이 적을수록 구간이 넓어진다.
 
-### 4-4. 고소득 오즈와 양의 연관이 큰 항목 (상위 8개)
+### 4-5. 고소득 오즈와 양의 연관이 큰 항목 (상위 8개)
 
 {top_md}
 
-### 4-5. 고소득 오즈와 음의 연관이 큰 항목 (하위 8개)
+### 4-6. 고소득 오즈와 음의 연관이 큰 항목 (하위 8개)
 
 {bottom_md}
 
-### 4-6. sex·race 계수
+### 4-7. sex·race 계수
 
 {demo_md}
 
 sex·race 계수는 1994년 표본에 기록된 조건부 연관이다. 인과관계의 증거가 아니며 개인 평가의 근거로
 사용할 수 없다. 관측되지 않은 교란 변수와 표본 선택의 영향을 통제하지 않았다.
-성별 계수는 `relationship`(Husband/Wife)을 함께 통제한 값인데 이 변수는 성별과 거의 겹치므로
-(1-4절 참고), 성별 전체 격차가 아니라 "가구 내 역할까지 고정했을 때 남는 차이"로 읽어야 한다.
-`native-country` 계수도 마찬가지로 국가별 순위가 아니다. 표본이 수십 행인 범주가 많고
+`native-country` 계수도 국가별 순위가 아니다. 표본이 수십 행인 범주가 많고
 이민 시기·직종 구성·표본 추출이 통제되지 않았다.
+
+### 4-8. 민감도 분석 — `{sensitivity["excluded"]}`를 뺐을 때
+`{sensitivity["excluded"]}`는 `sex`와 거의 겹치므로(1-4절), 이 변수를 통제한 상태의 성별 계수가
+통제 방식에 얼마나 의존하는지 확인한다. 아래는 이 변수만 빼고 같은 Pipeline으로 다시 학습한 결과다.
+
+{_sensitivity_md(sensitivity)}
+
+- 기준 범주: {sensitivity["focus"]}={sensitivity["reference"]}
+- 이 모델의 정확도 {sensitivity["accuracy"]:.4f} / F1 {sensitivity["f1"]:.4f}
+- 두 값의 차이가 크다면, 4-7절의 성별 계수는 "성별의 효과"가 아니라 "가구 내 역할까지 고정한 뒤
+  남는 차이"라는 뜻이다. 어느 쪽이 옳은 모형인지는 데이터가 아니라 묻고 싶은 질문이 정한다.
 
 ## 5. 결론 (모두 위 결과에서 계산)
 
-{_conclusions(ttest, chisq, ml, ab)}
+{_conclusions(ttest, chisq, ml, ab, sensitivity)}
 
 ### 5-1. 분석자 해석 (자동 계산 아님)
 - 학습·평가를 서로 다른 파일로 분리해 랜덤 분할보다 누수 위험이 낮다. 다만 1-4절대로 평가셋에도
@@ -369,10 +490,10 @@ sex·race 계수는 1994년 표본에 기록된 조건부 연관이다. 인과�
 - 전처리~모델을 Pipeline 하나로 묶어 재현 가능한 학습·배포 단위를 확보했다.
 - 결측 행 삭제는 소득 그룹별 제거율이 달라 표본 구성을 바꾼다. 위 1-3의 제거율 차이를 감안해
   결과를 읽어야 한다.
-- 이 리포트는 계수의 표준오차·신뢰구간과 PR-AUC, 임계값 조정을 다루지 않는다. 순위와 크기를
-  단정적으로 읽지 않도록 주의해야 한다.
+- 계수 구간은 근사값이고 다중비교를 보정하지 않았다. 80개 계수를 동시에 보면 우연히 1을 벗어나는
+  구간이 나오므로, 순위와 크기를 단정적으로 읽지 않도록 주의해야 한다.
 """
     try:
         file_path.write_text(md, encoding="utf-8")
     except OSError as e:
-        raise SystemExit(f"[오류] 리포트 저장 실패: {e}") from e
+        raise PipelineError(f"리포트 저장 실패: {e}") from e
