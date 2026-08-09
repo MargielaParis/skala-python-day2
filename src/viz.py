@@ -10,7 +10,14 @@ from matplotlib.patches import Patch
 from matplotlib.ticker import NullFormatter
 
 matplotlib.use("Agg")  # 파일 저장 전용 백엔드
-plt.rcParams["font.family"] = ["Helvetica Neue", "AppleGothic"]  # 기호/한글 폴백
+# 기호/한글 폴백 — macOS 우선, 없으면 Windows(Malgun Gothic)/Linux(Noto Sans CJK KR) 순
+plt.rcParams["font.family"] = [
+    "Helvetica Neue",
+    "AppleGothic",
+    "Malgun Gothic",
+    "Noto Sans CJK KR",
+    "DejaVu Sans",
+]
 plt.rcParams["axes.unicode_minus"] = False
 
 # 색 역할 고정 — 계열색은 순서대로만 배정하고 순환시키지 않는다

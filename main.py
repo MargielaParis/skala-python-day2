@@ -4,10 +4,10 @@
 프로그램 설명
 data/raw/adult.data(학습) + data/raw/adult.test(평가) — UCI 공식 분할본을 대상으로
 아래 5단계를 수행한다.
-1) 데이터 준비: train·test 각각 Pandas·Polars 로딩 비교, 결측치·중복 처리, 기본 EDA
+1) 데이터 준비: train·test 각각 Pandas·Polars 로딩·동등성 검증, 결측치·중복 처리, 기본 EDA
 2) 시각화: Seaborn 정적 차트(PNG) 3장(핵심 4패널 + 전체 변수 부록 2장),
    Plotly 인터랙티브 차트(HTML)
-3) 통계 분석: 기술통계·상관계수 산출, 소득 그룹 간 근로시간 t-test 및 p-value 해석
+3) 통계 분석: 성별x소득 카이제곱, 소득 그룹 간 근로시간 t-test(효과크기 포함), 기술통계·상관
 4) ML Pipeline: 전처리+로지스틱 회귀를 Pipeline으로 학습(train), 평가(test), joblib 저장
 5) 자동화: 분석 결과를 output/report.md로 자동 생성
 
@@ -18,6 +18,9 @@ data/raw/adult.data(학습) + data/raw/adult.test(평가) — UCI 공식 분할�
 2026-08-07 실습 3·4 형식 반영 (구분선·단계별 행 수 출력, Welch t-test)
 2026-08-07 train/test 8:2 랜덤 분할 -> UCI 공식 adult.data/adult.test 분할로 변경
 2026-08-07 차트 재설계, 전체 변수 플롯 추가, 회귀계수(오즈비) 출력 추가
+2026-08-09 Issue #5·#6·#7 반영 — Pandas·Polars 값 동등성 검증, 원핫 기준 범주(drop="first"),
+           성별x소득 카이제곱, t-test 효과크기, 혼동행렬·정밀도·재현율·ROC-AUC,
+           결측 처리 A/B 비교, 리포트 고정 결론 제거
 
 작성자: 박기연 (판교 7반)
 """
@@ -44,11 +47,18 @@ print(f"Using data: {TRAIN_FILE.name} (train) / {TEST_FILE.name} (test)")
 
 
 def prepare(file_path, label):
-    # 파일 하나를 로딩·정제하고 단계별 행 수를 출력해 (df, loading, cleaning) 반환
+    # 파일 하나를 로딩·정제하고 단계별 행 수를 출력해 (원본 df, 정제 df, loading, cleaning) 반환
     df_raw, loading = load.load_compare(file_path)
     print(
         f"[{label}] 로딩 {loading['rows']:,}행: "
-        f"Pandas {loading['pandas_sec']:.3f}초 / Polars {loading['polars_sec']:.3f}초"
+        f"Pandas {loading['pandas_sec']:.3f}초 / Polars {loading['polars_sec']:.3f}초 "
+        f"(단일 참고 측정)"
+    )
+    eq = loading["equality"]
+    print(
+        f"[{label}] Pandas·Polars 동등성: dtype 불일치 {len(eq['dtype_mismatch'])}컬럼 / "
+        f"null 불일치 {eq['null_mismatch']}셀 / 값 불일치 {eq['value_mismatch']}셀 "
+        f"-> {'동일' if eq['identical'] else '불일치'}"
     )
     df, cleaning = load.clean(df_raw)
     print(f"[{label}] 결측 컬럼: {cleaning['na_cols']}")
@@ -57,10 +67,14 @@ def prepare(file_path, label):
         f"(제거 {cleaning['raw'] - cleaning['after_na']:,}행)"
     )
     print(
+        f"[{label}] 소득 그룹별 제거율: "
+        + ", ".join(f"{k} {v:.2%}" for k, v in cleaning["drop_rate_by_income"].items())
+    )
+    print(
         f"[{label}] 중복 제거: {cleaning['after_na']:,}행 -> {cleaning['clean']:,}행 "
         f"(제거 {cleaning['after_na'] - cleaning['clean']:,}행)"
     )
-    return df, loading, cleaning
+    return df_raw, df, loading, cleaning
 
 
 # =========================================================
@@ -70,10 +84,10 @@ if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
 
     print("\n" + "=" * 80)
-    print("\n1) 데이터 준비 — Pandas·Polars 로딩 비교 + 정제 (train/test 각각)")
-    df_train, loading, cleaning = prepare(TRAIN_FILE, "train")
+    print("\n1) 데이터 준비 — Pandas·Polars 로딩·동등성 검증 + 정제 (train/test 각각)")
+    raw_train, df_train, loading, cleaning = prepare(TRAIN_FILE, "train")
     print()
-    df_test, loading_te, cleaning_te = prepare(TEST_FILE, "test")
+    raw_test, df_test, loading_te, cleaning_te = prepare(TEST_FILE, "test")
 
     print("\n1) 기본 EDA (train 기준)")
     print(df_train.describe(include="all").iloc[:4, :6])
@@ -90,12 +104,28 @@ if __name__ == "__main__":
     )
 
     print("\n" + "=" * 80)
-    print("\n3) 통계 분석 — 기술통계·상관·t-test (train 기준)")
+    print("\n3) 통계 분석 — 카이제곱·t-test·기술통계 (train 기준)")
+    chisq = stats_test.chisq_sex_income(df_train)
+    print("성별 고소득 비율: " + ", ".join(f"{k} {v:.1%}" for k, v in chisq["rate_by_sex"].items()))
+    print(
+        f"카이제곱: chi2={chisq['chi2']:.3f}, dof={chisq['dof']}, p={chisq['p_text']}, "
+        f"Cramer's V={chisq['cramers_v']:.3f}"
+    )
+    print(
+        "-> 성별과 소득은 독립이 아님 (H0 기각)"
+        if chisq["significant"]
+        else "-> 독립 가설을 기각하지 못함"
+    )
+
     describe, corr = stats_test.describe_numeric(df_train)
     print(describe.round(1).iloc[:3])
     ttest = stats_test.ttest_hours_by_income(df_train)
-    print(f"주당 근로시간: >50K {ttest['mean_high']:.1f} vs <=50K {ttest['mean_low']:.1f}")
+    print(f"\n주당 근로시간: >50K {ttest['mean_high']:.1f} vs <=50K {ttest['mean_low']:.1f}")
     print(f"t={ttest['t']:.3f}, p={ttest['p_text']}")
+    print(
+        f"차이 {ttest['diff']:+.2f}시간, 95% CI [{ttest['ci_low']:.2f}, {ttest['ci_high']:.2f}], "
+        f"Cohen's d={ttest['cohens_d']:.3f} ({ttest['effect']})"
+    )
     print(
         "-> 통계적으로 유의미한 차이 있음"
         if ttest["significant"]
@@ -107,29 +137,65 @@ if __name__ == "__main__":
     metrics = ml.train_and_evaluate(df_train, df_test, MODEL_FILE)
     print(
         f"피처: 수치 {len(metrics['num_cols'])}개 + 범주 {len(metrics['cat_cols'])}개"
-        f"(sex·race 포함) -> 원핫 후 {metrics['n_features']}개, 제외 {metrics['dropped']}"
+        f"(sex·race 포함) -> 원핫(기준 범주 제외) 후 {metrics['n_features']}개, "
+        f"제외 {metrics['dropped']}"
     )
     print(
         f"학습 {metrics['train']:,}건 (>50K 비율 {metrics['train_pos_rate']:.3f}) / "
         f"평가 {metrics['test']:,}건 (>50K 비율 {metrics['test_pos_rate']:.3f})"
     )
-    print(f"정확도 {metrics['accuracy']:.4f} / F1 {metrics['f1']:.4f}")
+    print(
+        f"정확도 {metrics['accuracy']:.4f} / 정밀도 {metrics['precision']:.4f} / "
+        f"재현율 {metrics['recall']:.4f} / F1 {metrics['f1']:.4f} / "
+        f"ROC-AUC {metrics['roc_auc']:.4f}"
+    )
+    cm = metrics["confusion"]
+    print(
+        f"혼동행렬: TN {cm['tn']:,} / FP {cm['fp']:,} / FN {cm['fn']:,} / TP {cm['tp']:,}"
+        f"  (실제 고소득 {cm['tp'] + cm['fn']:,}명 중 {cm['fn']:,}명을 저소득으로 놓침)"
+    )
     print(f"[PASS] 모델 저장·재로딩 검증 -> {MODEL_FILE.name}")
 
-    print("\n4) 회귀계수 — 고소득 확률을 올리는/내리는 상위 5개 (오즈비)")
+    print("\n4) 결측 처리 A/B — dropna vs 범주형 Unknown 보존")
+    unknown_train, _ = load.clean(raw_train, strategy=load.UNKNOWN)
+    unknown_test, _ = load.clean(raw_test, strategy=load.UNKNOWN)
+    ab = ml.compare_strategies(
+        {
+            load.DROP: (df_train, df_test),
+            load.UNKNOWN: (unknown_train, unknown_test),
+        }
+    )
+    for name, m in ab.items():
+        print(
+            f"  {name:<8} 학습 {m['train']:,}건 -> 정확도 {m['accuracy']:.4f} / "
+            f"정밀도 {m['precision']:.4f} / 재현율 {m['recall']:.4f} / F1 {m['f1']:.4f}"
+        )
+
+    print("\n4) 회귀계수 — 고소득 확률을 올리는/내리는 상위 5개 (기준 범주 대비 오즈비)")
     coef = metrics["coef"]
+    print(f"  기준 범주: {metrics['reference']}")
     for name, row in coef.tail(5)[::-1].iterrows():
         print(f"  + {name:<32} {row['coef']:+.3f}  odds x{row['odds_ratio']:.2f}")
     for name, row in coef.head(5).iterrows():
         print(f"  - {name:<32} {row['coef']:+.3f}  odds x{row['odds_ratio']:.2f}")
-    print("\n4) sex·race 계수")
+    print("\n4) sex·race 계수 (수치형은 1 표준편차 증가 기준, 범주형은 기준 범주 대비)")
     for name, row in coef.loc[coef.index.str.startswith(("sex_", "race_"))].iterrows():
         print(f"    {name:<32} {row['coef']:+.3f}  odds x{row['odds_ratio']:.2f}")
 
     print("\n" + "=" * 80)
     print("\n5) 자동화 — report.md 생성")
     report.write_report(
-        REPORT_FILE, loading, cleaning, loading_te, cleaning_te, describe, corr, ttest, metrics
+        REPORT_FILE,
+        loading=loading,
+        cleaning=cleaning,
+        loading_te=loading_te,
+        cleaning_te=cleaning_te,
+        describe=describe,
+        corr=corr,
+        ttest=ttest,
+        chisq=chisq,
+        ml=metrics,
+        ab=ab,
     )
     print(f"저장 완료 -> {REPORT_FILE.name}")
 
