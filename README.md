@@ -31,12 +31,13 @@ Adult Census Income(UCI) 데이터로 데이터 준비 → 시각화 → 통계 
 
 ## 개발 환경 설정
 
-Python **3.11**을 기준으로 한다. 가상환경을 만들고 활성화한 뒤 의존성을 설치한다.
+Python **3.12 이상**이 필요하다. 가상환경을 만들고 활성화한 뒤 의존성을 설치한다.
+(검증은 3.12.4와 3.14.6에서 했다.)
 
 **macOS / Linux**
 
 ```bash
-python3.11 -m venv .venv
+python3 -m venv .venv       # python3 --version 이 3.12 이상인지 확인
 source .venv/bin/activate
 python -m pip install -r requirements.txt -r requirements-dev.txt
 pre-commit install          # 커밋 전 자동 검사 활성화
@@ -45,7 +46,7 @@ pre-commit install          # 커밋 전 자동 검사 활성화
 **Windows (PowerShell)**
 
 ```powershell
-py -3.11 -m venv .venv
+py -3.12 -m venv .venv      # 또는 py -3.14
 .\.venv\Scripts\Activate.ps1
 python -m pip install -r requirements.txt -r requirements-dev.txt
 pre-commit install
@@ -53,8 +54,11 @@ pre-commit install
 
 이후의 모든 명령은 **가상환경이 활성화된 셸**에서 실행한다.
 `.pre-commit-config.yaml`의 `pytest` 훅은 `language: system`이라 별도 환경을 만들지 않고
-현재 PATH의 `pytest`를 그대로 쓴다. 가상환경을 활성화하지 않으면 시스템 인터프리터의
-`pytest`가 실행되어 의존성을 찾지 못한다.
+현재 PATH의 `pytest`를 그대로 쓴다. 가상환경을 활성화하지 않으면
+`Executable 'pytest' not found`로 이 훅만 실패한다.
+
+훅 환경은 `default_language_version: python3`이라 pre-commit을 실행한 인터프리터를 따라간다.
+특정 마이너 버전을 고정하면 그 버전이 없는 장비에서 훅 환경 생성 자체가 실패하므로 고정하지 않았다.
 
 ## 데이터 준비
 
@@ -141,18 +145,31 @@ mypy .
 
 ## 분석 요약
 
-- 성별과 소득은 독립이 아니다 — 카이제곱 chi2=1413.8, dof=1, p=2.1e-309, Cramer's V=0.217
-  (고소득 비율 Female 11.4% vs Male 31.4%)
+- 성별과 소득은 독립이 아니다 — 카이제곱 chi2=1414.9, dof=1, p=1.2e-309, Cramer's V=0.217
+  (고소득 비율 Female 11.4% vs Male 31.4%). 최소 기대빈도가 2,434라 Yates 보정은 쓰지 않았다.
 - 소득 >50K 그룹의 주당 근로시간이 6.36시간 길다 (95% CI [6.07, 6.64], Cohen's d=0.545, 효과크기 중간)
 - 학력 수준이 높을수록 고소득 비율 증가
-- LogisticRegression Pipeline: 정확도 0.8479 / 정밀도 0.7299 / 재현율 0.6049 / F1 0.6615 / ROC-AUC 0.9029
+- LogisticRegression Pipeline: 정확도 0.8476 / 정밀도 0.7288 / 재현율 0.6049 / F1 0.6611 / ROC-AUC 0.9027
   (학습 adult.data 30,139건 / 평가 adult.test 15,055건, 정제 후 기준)
   - 실제 고소득 3,700명 중 1,462명을 저소득으로 놓쳤다 (혼동행렬은 `output/report.md` 4-1절)
-- 회귀 피처는 sex·race를 포함한 12개 변수. `OneHotEncoder(drop="first")`로 범주마다 기준을 하나 빼
-  원핫 후 80개다. fnlwgt(표본 가중치)와 education(education-num과 중복)만 제외했다.
+- 회귀 피처는 sex·race를 포함한 12개 변수. 범주마다 기준 범주를 하나 빼 원핫 후 80개다.
+  fnlwgt(표본 가중치)와 education(education-num과 중복)만 제외했다.
+  - **기준 범주는 학습 표본이 가장 많은 범주**로 잡는다. 사전순 첫 범주(`drop="first"`)를 쓰면
+    `native-country`의 기준이 학습 18행짜리 Cambodia가 되어 나머지 40개 대비가 전부 불안정해진다.
   - **모든 범주형 계수는 기준 범주 대비 조건부 오즈비**이고, 수치형 계수는 **1 표준편차 증가 기준**이다.
-    기준 범주 목록과 표준편차 크기는 `output/report.md` 4-3절 참고.
-- 결측 처리 방식 A/B: dropna(F1 0.6615) vs 범주형 Unknown 보존(F1 0.6575). 결측 행 삭제는
+    기준 범주 목록·표준편차 크기·범주별 학습 표본 수는 `output/report.md` 4-3~4-6절 참고.
+- 결측 처리 방식 A/B: dropna(F1 0.6611) vs 범주형 Unknown 보존(F1 0.6573). 결측 행 삭제는
   소득 그룹별 제거율이 달라(`<=50K` 8.36% vs `>50K` 4.25%) 표본 구성을 바꾼다.
+
+### 결과를 읽을 때의 한계
+
+`output/report.md` 1-4절에 매 실행마다 계산해 싣는다.
+
+- 평가셋에도 결측·중복 제거를 적용했으므로 공식 평가셋 지표와 그대로 비교할 수 없다.
+- train과 test에 완전히 같은 행이 19건 있다 (제거하지 않았다).
+- `capital-gain`은 99,999로 상한 처리된 값이라 큰 계수를 금액 효과로 읽으면 안 된다.
+- `relationship`(Husband/Wife)은 `sex`와 거의 겹치므로, 성별 계수는 전체 격차가 아니라
+  가구 내 역할까지 고정했을 때 남는 차이다. 성별 전체 격차는 3-1절 카이제곱으로 읽는다.
+- 계수의 표준오차·신뢰구간, PR-AUC, 임계값 조정은 다루지 않는다.
 
 재검증 기록(커밋 SHA·입력 SHA-256·환경·지표)은 [`docs/verification.md`](docs/verification.md) 참고.

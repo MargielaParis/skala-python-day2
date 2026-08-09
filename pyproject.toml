@@ -1,10 +1,10 @@
 [tool.black]
 line-length = 100
-target-version = ["py311"]
+target-version = ["py312"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 # E/W pycodestyle, F pyflakes, I isort, UP pyupgrade, B bugbear, SIM simplify
@@ -17,18 +17,12 @@ ignore = [
 known-first-party = ["src"]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.12"
 ignore_missing_imports = true      # pandas/polars/sklearn 등 스텁 없는 패키지 허용
 warn_unused_ignores = true
 warn_redundant_casts = true
-exclude = "^(output|data|\\.venv|venv)/"
-
-# numpy 2.5의 동봉 스텁은 3.12 전용 `type` 문을 써서 python_version=3.11로는 파싱되지 않는다.
-# 우리 코드가 아니므로 따라 들어가지 않는다.
-[[tool.mypy.overrides]]
-module = ["numpy", "numpy.*"]
-follow_imports = "skip"
-follow_imports_for_stubs = true
+# 가상환경은 우리 코드가 아니므로 검사 대상에서 제외한다
+exclude = "^(output|data|\\.venv|venv)"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

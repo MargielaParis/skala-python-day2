@@ -1,16 +1,19 @@
 # Adult Census Income — End2End 분석 리포트
 
-- 생성 일시: 2026-08-09 16:46
+- 생성 일시: 2026-08-09 17:27
 - 작성자: 박기연 (판교 7반)
 - 데이터 분할: UCI 공식 분할 사용 (`adult.data` 학습 / `adult.test` 평가, 랜덤 분할 없음)
 - 분석 범위: 1994년 US Census에서 추출한 비가중 표본. 아래 결과는 이 표본 안의 조건부 연관이며
   모집단 인과효과나 개인 평가의 근거가 아니다.
+- 변수 표기: `sex`·`race`는 1994년 당시 행정 분류 체계로 기록된 값이다. `sex`는 두 값만 존재해
+  성별 정체성을 나타내지 않고, `race` 범주도 조사 시점의 분류이지 자기 식별과 일치하지 않을 수 있다.
+  이 리포트에서 두 변수는 "기록된 범주 간 차이"를 보는 용도로만 쓴다.
 
 ## 1. 데이터 준비
 
 ### 1-1. Pandas·Polars 로딩 비교
 - 소요 시간(단일 참고 측정, 벤치마크 아님)
-  - train: Pandas 0.030초 vs Polars 0.015초
+  - train: Pandas 0.029초 vs Polars 0.014초
     (32,561행 x 15컬럼)
   - test: Pandas 0.016초 vs Polars 0.011초
     (16,281행 x 15컬럼)
@@ -42,11 +45,25 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 | test | <=50K | 12,435 | 1,075 | 8.64% |
 | test | >50K | 3,846 | 146 | 3.80% |
 
-- 고소득(>50K) 비율 변화: train 0.2408 -> 0.2489 /
+- 결측 제거 직후 고소득(>50K) 비율(중복 제거 전 기준):
+  train 0.2408 -> 0.2489 /
   test 0.2362 -> 0.2457
 
 - `adult.test`는 첫 줄이 주석(`|1x3 Cross validator`), 라벨에 마침표(`>50K.`)가 붙어 있어
   로딩 단계에서 주석 제외·라벨 표기 통일 처리를 했다.
+
+### 1-4. 결과를 읽을 때의 데이터 한계
+- **평가셋에도 중복 제거를 적용했다.** test는 15,060행에서
+  15,055행이 됐다. 공식 평가셋을 그대로 쓰지 않았으므로 아래 지표를 다른 참가자와
+  비교할 때는 같은 정제 절차를 썼는지 확인해야 한다.
+- **train과 test에 완전히 같은 행이 19건 있다.** 공식 분할이지만 이만큼은
+  평가가 낙관적으로 치우칠 수 있다. 이번 파이프라인은 이 행들을 제거하지 않았다.
+- **`capital-gain`은 상한 처리된 값이다.** 학습 데이터에서 0인 비율이
+  91.6%이고, 148행이 상한값 99,999이고 그중 고소득 비율은 100.0%다. 상한값은 실제 금액이 아니라
+  "그 이상"을 뜻하는 표기이므로, 이 변수의 큰 계수를 금액 효과로 읽으면 안 된다.
+- **`relationship`은 `sex`와 거의 겹친다.** 성별 편중도 — Husband 100.0%, Wife 99.9%.
+  `relationship`을 함께 통제한 상태의 성별 계수는 "가구 내 역할을 고정했을 때의 차이"이므로,
+  성별 전체 격차는 3-1절의 교차표와 카이제곱으로 읽어야 한다.
 
 ## 2. 시각화 (train 기준)
 - `output/eda_charts.png` — 핵심 4패널: 연령 분포, 근로시간 박스플롯, 직업별 고소득 비율, 수치형 상관
@@ -66,9 +83,13 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 | Female |    8661 |   1112 |
 | Male   |   13972 |   6394 |
 
-- chi2=1413.803, 자유도=1, n=30,139, p=2.104e-309 -> **성별과 소득은 독립이 아니다 (H0 기각)**
+- chi2=1414.873, 자유도=1, n=30,139, p=1.232e-309 -> **성별과 소득은 독립이 아니다 (H0 기각)**
 - Cramer's V=0.217 (표본 크기와 무관한 연관 강도)
 - 성별 고소득 비율: Female 11.4%, Male 31.4%
+- 최소 기대빈도가 2,434이라 Yates 연속성 보정을 쓰지 않았다
+  (보정은 기대빈도가 작은 2x2를 위한 보수적 장치이고, 여기서 쓰면 chi2와 Cramer's V가 낮게 잡힌다).
+- 이 검정은 다른 변수를 통제하지 않은 **전체 연관**이다. 4절의 성별 계수는 학력·직업·근로시간·
+  가구 내 역할을 고정한 뒤의 값이라 크기가 다르며, 둘은 서로 다른 질문에 답한다.
 
 ### 3-2. 소득 그룹 간 주당 근로시간 — Welch t-test
 - 평균: >50K 45.7시간 vs <=50K 39.4시간
@@ -105,91 +126,107 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 
 | 지표 | 값 |
 |---|---:|
-| 정확도 (accuracy) | 0.8479 |
-| 정밀도 (precision) | 0.7299 |
+| 정확도 (accuracy) | 0.8476 |
+| 정밀도 (precision) | 0.7288 |
 | 재현율 (recall) | 0.6049 |
-| F1 | 0.6615 |
-| ROC-AUC | 0.9029 |
+| F1 | 0.6611 |
+| ROC-AUC | 0.9027 |
 
 고소득 표본이 적어 정확도만으로는 실제 고소득자를 얼마나 놓쳤는지 알 수 없다. 혼동행렬로 확인한다.
 
 | 실제 \ 예측 | <=50K | >50K |
 |---|---:|---:|
-| <=50K | 10,527 | 828 |
+| <=50K | 10,522 | 833 |
 | >50K | 1,462 | 2,238 |
 
 - 실제 고소득 3,700명 중
   1,462명을 저소득으로 잘못 예측했다 (재현율 0.6049).
 - 실제 저소득 11,355명 중
-  828명을 고소득으로 잘못 예측했다.
+  833명을 고소득으로 잘못 예측했다.
 
 ### 4-2. 결측 처리 방식 A/B 비교
 같은 Pipeline으로 결측 처리만 바꿔 학습·평가한 결과다.
 
 | 결측 전략 | 학습 행 수 | 평가 행 수 | 정확도 | 정밀도 | 재현율 | F1 | ROC-AUC |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| 결측 행 삭제(dropna) | 30,139 | 15,055 | 0.8479 | 0.7299 | 0.6049 | 0.6615 | 0.9029 |
-| 범주형 결측을 Unknown으로 보존 | 32,537 | 16,276 | 0.8525 | 0.7283 | 0.5993 | 0.6575 | 0.9050 |
+| 결측 행 삭제(dropna) | 30,139 | 15,055 | 0.8476 | 0.7288 | 0.6049 | 0.6611 | 0.9027 |
+| 범주형 결측을 Unknown으로 보존 | 32,537 | 16,276 | 0.8524 | 0.7280 | 0.5991 | 0.6573 | 0.9049 |
 
 ### 4-3. 계수 해석의 전제
-- 범주형: `drop="first"`로 각 변수의 첫 범주를 빼고 원핫했다. 남은 계수는 **그 기준 범주 대비**
-  조건부 오즈비 `exp(beta)`다. 기준 범주 — workclass=Federal-gov, marital-status=Divorced, occupation=Adm-clerical, relationship=Husband, race=Amer-Indian-Eskimo, sex=Female, native-country=Cambodia
+- 범주형: 각 변수에서 기준 범주 하나를 빼고 원핫했다. 남은 계수는 **그 기준 범주 대비**
+  조건부 오즈비 `exp(beta)`다.
+  - 기준 선정 규칙 — 각 범주형 변수에서 학습 표본이 가장 많은 범주 (동수면 사전순 앞)
+  - 기준 범주 — workclass=Private, marital-status=Married-civ-spouse, occupation=Prof-specialty, relationship=Husband, race=White, sex=Male, native-country=United-States
+  - 사전순 첫 범주(`drop="first"`)를 쓰면 `native-country`의 기준이 학습 18행짜리 범주가 되어
+    나머지 40개 대비가 모두 불안정해진다. 그래서 표본 최다 범주를 기준으로 삼았다.
+  - `LogisticRegression`은 기본이 L2 정규화라 기준 범주를 바꾸면 계수뿐 아니라 예측도 미세하게
+    달라진다(정규화가 "계수 0"을 기준 범주 대비 0으로 해석하기 때문). 지표를 비교할 때는
+    기준 범주 규칙이 같은지 확인해야 한다.
 - 수치형: StandardScaler 적용 후 계수이므로 **1 표준편차 증가 기준**이다.
   1 표준편차 크기 — age=13.13, education-num=2.55, capital-gain=7408.99, capital-loss=404.44, hours-per-week=11.98
 - `handle_unknown="ignore"`이므로 학습에 없던 범주는 전부 0으로 인코딩되어 기준 범주와 구분되지 않는다.
 - 계수는 다른 변수를 통제한 상태의 부분효과라 3절의 단순 집계 비율과 부호가 다를 수 있다.
+- 아래 표의 `학습 표본`은 해당 범주와 기준 범주의 학습 행 수다. 표본이 적은 범주의 오즈비는
+  신뢰구간이 넓어 순위를 그대로 읽으면 안 된다. 이 리포트는 계수의 표준오차를 계산하지 않는다.
 
-### 4-4. 고소득 확률을 올리는 요인 (상위 8개)
+### 4-4. 고소득 오즈와 양의 연관이 큰 항목 (상위 8개)
 
-|                                   |    계수 |    오즈비 | 비교 기준                      |
-|:----------------------------------|------:|-------:|:---------------------------|
-| capital-gain                      | 2.339 | 10.374 | 1 표준편차 증가                  |
-| marital-status_Married-AF-spouse  | 1.822 |  6.183 | 기준 marital-status=Divorced |
-| marital-status_Married-civ-spouse | 1.729 |  5.635 | 기준 marital-status=Divorced |
-| relationship_Wife                 | 1.312 |  3.712 | 기준 relationship=Husband    |
-| native-country_Italy              | 0.859 |  2.361 | 기준 native-country=Cambodia |
-| sex_Male                          | 0.858 |  2.358 | 기준 sex=Female              |
-| occupation_Exec-managerial        | 0.799 |  2.224 | 기준 occupation=Adm-clerical |
-| race_Asian-Pac-Islander           | 0.735 |  2.086 | 기준 race=Amer-Indian-Eskimo |
+|                                  |    계수 |    오즈비 | 비교 기준                                | 학습 표본             |
+|:---------------------------------|------:|-------:|:-------------------------------------|:------------------|
+| capital-gain                     | 2.324 | 10.222 | 1 표준편차 증가                            | 30,139            |
+| relationship_Wife                | 1.302 |  3.677 | 기준 relationship=Husband              | 1,406 / 기준 12,457 |
+| native-country_Cambodia          | 0.9   |  2.459 | 기준 native-country=United-States      | 18 / 기준 27,487    |
+| education-num                    | 0.721 |  2.056 | 1 표준편차 증가                            | 30,139            |
+| native-country_Italy             | 0.708 |  2.03  | 기준 native-country=United-States      | 68 / 기준 27,487    |
+| marital-status_Married-AF-spouse | 0.613 |  1.845 | 기준 marital-status=Married-civ-spouse | 21 / 기준 14,059    |
+| workclass_Federal-gov            | 0.487 |  1.627 | 기준 workclass=Private                 | 943 / 기준 22,264   |
+| native-country_France            | 0.365 |  1.44  | 기준 native-country=United-States      | 27 / 기준 27,487    |
 
-### 4-5. 고소득 확률을 내리는 요인 (하위 8개)
+### 4-5. 고소득 오즈와 음의 연관이 큰 항목 (하위 8개)
 
-|                                   |     계수 |   오즈비 | 비교 기준                      |
-|:----------------------------------|-------:|------:|:---------------------------|
-| occupation_Priv-house-serv        | -1.556 | 0.211 | 기준 occupation=Adm-clerical |
-| native-country_Columbia           | -1.34  | 0.262 | 기준 native-country=Cambodia |
-| workclass_Without-pay             | -1.116 | 0.328 | 기준 workclass=Federal-gov   |
-| native-country_South              | -1.027 | 0.358 | 기준 native-country=Cambodia |
-| relationship_Own-child            | -1.027 | 0.358 | 기준 relationship=Husband    |
-| occupation_Farming-fishing        | -0.999 | 0.368 | 기준 occupation=Adm-clerical |
-| workclass_Self-emp-not-inc        | -0.95  | 0.387 | 기준 workclass=Federal-gov   |
-| native-country_Dominican-Republic | -0.931 | 0.394 | 기준 native-country=Cambodia |
+|                                      |     계수 |   오즈비 | 비교 기준                                | 학습 표본             |
+|:-------------------------------------|-------:|------:|:-------------------------------------|:------------------|
+| occupation_Priv-house-serv           | -1.912 | 0.148 | 기준 occupation=Prof-specialty         | 141 / 기준 4,034    |
+| marital-status_Never-married         | -1.903 | 0.149 | 기준 marital-status=Married-civ-spouse | 9,711 / 기준 14,059 |
+| native-country_Columbia              | -1.55  | 0.212 | 기준 native-country=United-States      | 56 / 기준 27,487    |
+| occupation_Farming-fishing           | -1.543 | 0.214 | 기준 occupation=Prof-specialty         | 987 / 기준 4,034    |
+| marital-status_Separated             | -1.494 | 0.224 | 기준 marital-status=Married-civ-spouse | 939 / 기준 14,059   |
+| marital-status_Divorced              | -1.425 | 0.24  | 기준 marital-status=Married-civ-spouse | 4,212 / 기준 14,059 |
+| occupation_Other-service             | -1.361 | 0.256 | 기준 occupation=Prof-specialty         | 3,209 / 기준 4,034  |
+| marital-status_Married-spouse-absent | -1.342 | 0.261 | 기준 marital-status=Married-civ-spouse | 370 / 기준 14,059   |
 
 ### 4-6. sex·race 계수
 
-|                         |    계수 |   오즈비 | 비교 기준                      |
-|:------------------------|------:|------:|:---------------------------|
-| sex_Male                | 0.858 | 2.358 | 기준 sex=Female              |
-| race_Asian-Pac-Islander | 0.735 | 2.086 | 기준 race=Amer-Indian-Eskimo |
-| race_White              | 0.544 | 1.722 | 기준 race=Amer-Indian-Eskimo |
-| race_Black              | 0.431 | 1.539 | 기준 race=Amer-Indian-Eskimo |
-| race_Other              | 0.086 | 1.09  | 기준 race=Amer-Indian-Eskimo |
+|                         |     계수 |   오즈비 | 비교 기준         | 학습 표본             |
+|:------------------------|-------:|------:|:--------------|:------------------|
+| race_Asian-Pac-Islander |  0.106 | 1.112 | 기준 race=White | 894 / 기준 25,912   |
+| race_Black              | -0.108 | 0.897 | 기준 race=White | 2,816 / 기준 25,912 |
+| race_Other              | -0.477 | 0.621 | 기준 race=White | 231 / 기준 25,912   |
+| race_Amer-Indian-Eskimo | -0.565 | 0.568 | 기준 race=White | 286 / 기준 25,912   |
+| sex_Female              | -0.847 | 0.429 | 기준 sex=Male   | 9,773 / 기준 20,366 |
 
 sex·race 계수는 1994년 표본에 기록된 조건부 연관이다. 인과관계의 증거가 아니며 개인 평가의 근거로
 사용할 수 없다. 관측되지 않은 교란 변수와 표본 선택의 영향을 통제하지 않았다.
+성별 계수는 `relationship`(Husband/Wife)을 함께 통제한 값인데 이 변수는 성별과 거의 겹치므로
+(1-4절 참고), 성별 전체 격차가 아니라 "가구 내 역할까지 고정했을 때 남는 차이"로 읽어야 한다.
+`native-country` 계수도 마찬가지로 국가별 순위가 아니다. 표본이 수십 행인 범주가 많고
+이민 시기·직종 구성·표본 추출이 통제되지 않았다.
 
 ## 5. 결론 (모두 위 결과에서 계산)
 
-- 성별과 소득은 카이제곱 검정에서 독립 가설을 기각했다 (chi2=1413.8, dof=1, p=2.104e-309, Cramer's V=0.217). 성별 고소득 비율: Female 11.4%, Male 31.4%.
+- 성별과 소득은 카이제곱 검정에서 독립 가설을 기각했다 (chi2=1414.9, dof=1, p=1.232e-309, Cramer's V=0.217). 성별 고소득 비율: Female 11.4%, Male 31.4%.
 - 고소득 그룹의 주당 근로시간은 저소득 그룹보다 +6.4시간이고 95% 신뢰구간은 [6.07, 6.64], Cohen's d=0.545(중간)로 통계적으로 유의미한 차이가 있다.
-- 계수 절대값이 가장 큰 항은 `capital-gain`이며 계수 +2.339, 오즈비 10.374다. 범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이다.
-- 다른 변수를 통제했을 때 Male는 기준(Female) 대비 오즈 2.358배로 추정됐다.
-- 평가 성능은 정확도 0.8479, 정밀도 0.7299, 재현율 0.6049, F1 0.6615, ROC-AUC 0.9029다. 실제 고소득 3,700명 중 1,462명을 저소득으로 놓쳤다.
-- 결측 처리 방식은 F1 기준 '결측 행 삭제(dropna)'가 0.6615로 가장 높았다.
+- 계수 절대값이 가장 큰 항은 `capital-gain`이며 계수 +2.324, 오즈비 10.222다. 범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이며, 계수 크기만으로 중요도를 단정할 수는 없다(표준오차 미산출).
+- 학력·직업·근로시간과 가구 내 역할(relationship)까지 고정했을 때 Female는 기준(Male) 대비 오즈 0.429배로 추정됐다. relationship은 성별과 거의 겹치므로 이 값은 성별 전체 격차가 아니다.
+- 평가 성능은 정확도 0.8476, 정밀도 0.7288, 재현율 0.6049, F1 0.6611, ROC-AUC 0.9027다. 실제 고소득 3,700명 중 1,462명을 저소득으로 놓쳤다.
+- 결측 처리 방식은 F1 기준 '결측 행 삭제(dropna)'가 0.6611로 가장 높았다.
 
 ### 5-1. 분석자 해석 (자동 계산 아님)
-- 학습·평가를 서로 다른 파일로 완전히 분리해, 랜덤 분할보다 데이터 누수 위험이 낮고
-  다른 참가자와 지표를 그대로 비교할 수 있는 평가 기준을 확보했다.
+- 학습·평가를 서로 다른 파일로 분리해 랜덤 분할보다 누수 위험이 낮다. 다만 1-4절대로 평가셋에도
+  결측·중복 제거를 적용했고 두 파일에 동일 행이 남아 있으므로, 다른 참가자와 지표를 비교하려면
+  정제 절차부터 맞춰야 한다.
 - 전처리~모델을 Pipeline 하나로 묶어 재현 가능한 학습·배포 단위를 확보했다.
 - 결측 행 삭제는 소득 그룹별 제거율이 달라 표본 구성을 바꾼다. 위 1-3의 제거율 차이를 감안해
   결과를 읽어야 한다.
+- 이 리포트는 계수의 표준오차·신뢰구간과 PR-AUC, 임계값 조정을 다루지 않는다. 순위와 크기를
+  단정적으로 읽지 않도록 주의해야 한다.

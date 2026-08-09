@@ -27,13 +27,21 @@ def _reference_note(reference):
     return ", ".join(f"{col}={ref}" for col, ref in reference.items() if ref is not None)
 
 
-def _annotate(coef_slice, reference):
-    # 각 계수가 무엇과 비교된 값인지(기준 범주 / 1 표준편차)를 표에 함께 적는다
-    basis = []
+def _annotate(coef_slice, reference, counts, n_train):
+    # 각 계수가 무엇과 비교된 값인지(기준 범주 / 1 표준편차)와 그 대비를 만든 표본 수를 함께 적는다.
+    # 표본 수가 없으면 18행짜리 범주의 오즈비가 27,000행짜리 범주와 똑같이 단정적으로 보인다.
+    basis, sizes = [], []
     for name in coef_slice.index:
         feature = next((c for c in reference if name.startswith(f"{c}_")), None)
-        basis.append(f"기준 {feature}={reference[feature]}" if feature else "1 표준편차 증가")
-    table = coef_slice.assign(**{"비교 기준": basis})
+        if feature is None:
+            basis.append("1 표준편차 증가")
+            sizes.append(f"{n_train:,}")
+            continue
+        level = name[len(feature) + 1 :]
+        basis.append(f"기준 {feature}={reference[feature]}")
+        ref_n = counts.get(feature, {}).get(reference[feature], 0)
+        sizes.append(f"{counts.get(feature, {}).get(level, 0):,} / 기준 {ref_n:,}")
+    table = coef_slice.assign(**{"비교 기준": basis, "학습 표본": sizes})
     return table.rename(columns={"coef": "계수", "odds_ratio": "오즈비"}).round(3).to_markdown()
 
 
@@ -47,7 +55,11 @@ def _sex_contrast(coef, reference):
         f"{name.split('_', 1)[1]}는 기준({ref}) 대비 오즈 {row['odds_ratio']:.3f}배"
         for name, row in rows.iterrows()
     ]
-    return "다른 변수를 통제했을 때 " + ", ".join(parts) + "로 추정됐다."
+    return (
+        "학력·직업·근로시간과 가구 내 역할(relationship)까지 고정했을 때 "
+        + ", ".join(parts)
+        + "로 추정됐다. relationship은 성별과 거의 겹치므로 이 값은 성별 전체 격차가 아니다."
+    )
 
 
 def _confusion_md(cm, positive=">50K"):
@@ -106,7 +118,8 @@ def _conclusions(ttest, chisq, ml, ab):
         f"{'통계적으로 유의미한 차이가 있다' if ttest['significant'] else '유의미한 차이가 없다'}.",
         f"- 계수 절대값이 가장 큰 항은 `{strongest}`이며 "
         f"계수 {strongest_row['coef']:+.3f}, 오즈비 {strongest_row['odds_ratio']:.3f}다. "
-        f"범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이다.",
+        f"범주형은 기준 범주 대비, 수치형은 1 표준편차 증가 기준이며, "
+        f"계수 크기만으로 중요도를 단정할 수는 없다(표준오차 미산출).",
         f"- {_sex_contrast(coef, reference)}",
         f"- 평가 성능은 정확도 {ml['accuracy']:.4f}, 정밀도 {ml['precision']:.4f}, "
         f"재현율 {ml['recall']:.4f}, F1 {ml['f1']:.4f}, ROC-AUC {ml['roc_auc']:.4f}다. "
@@ -133,14 +146,18 @@ def write_report(
     chisq,
     ml,
     ab,
+    caveats,
 ):
     # 단계별 결과를 받아 발표용 report.md를 생성
     corr_pair = corr.loc["education-num", "hours-per-week"]
     coef = ml["coef"]
     reference = ml["reference"]
-    top_md = _annotate(coef.tail(8)[::-1], reference)
-    bottom_md = _annotate(coef.head(8), reference)
-    demo_md = _annotate(coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1], reference)
+    counts, n_train = ml["category_counts"], ml["train"]
+    top_md = _annotate(coef.tail(8)[::-1], reference, counts, n_train)
+    bottom_md = _annotate(coef.head(8), reference, counts, n_train)
+    demo_md = _annotate(
+        coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1], reference, counts, n_train
+    )
 
     ttest_msg = (
         "통계적으로 유의미한 차이 있음 (H0 기각)"
@@ -168,6 +185,11 @@ def write_report(
         f"chi2={chisq['chi2']:.3f}, 자유도={chisq['dof']}, "
         f"n={chisq['n']:,}, p={chisq['p_text']}"
     )
+    role_purity = ", ".join(f"{role} {share:.1%}" for role, share in caveats["role_purity"].items())
+    cg_cap = (
+        f"{caveats['capital_gain_capped']:,}행이 상한값 {caveats['capital_gain_cap']:,}이고 "
+        f"그중 고소득 비율은 {caveats['capital_gain_capped_pos_rate']:.1%}"
+    )
 
     md = f"""# Adult Census Income — End2End 분석 리포트
 
@@ -176,6 +198,9 @@ def write_report(
 - 데이터 분할: UCI 공식 분할 사용 (`adult.data` 학습 / `adult.test` 평가, 랜덤 분할 없음)
 - 분석 범위: 1994년 US Census에서 추출한 비가중 표본. 아래 결과는 이 표본 안의 조건부 연관이며
   모집단 인과효과나 개인 평가의 근거가 아니다.
+- 변수 표기: `sex`·`race`는 1994년 당시 행정 분류 체계로 기록된 값이다. `sex`는 두 값만 존재해
+  성별 정체성을 나타내지 않고, `race` 범주도 조사 시점의 분류이지 자기 식별과 일치하지 않을 수 있다.
+  이 리포트에서 두 변수는 "기록된 범주 간 차이"를 보는 용도로만 쓴다.
 
 ## 1. 데이터 준비
 
@@ -208,11 +233,25 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 
 {_na_impact_md(cleaning, cleaning_te)}
 
-- 고소득(>50K) 비율 변화: train {cleaning["pos_rate_raw"]:.4f} -> {cleaning["pos_rate_kept"]:.4f} /
+- 결측 제거 직후 고소득(>50K) 비율(중복 제거 전 기준):
+  train {cleaning["pos_rate_raw"]:.4f} -> {cleaning["pos_rate_kept"]:.4f} /
   test {cleaning_te["pos_rate_raw"]:.4f} -> {cleaning_te["pos_rate_kept"]:.4f}
 
 - `adult.test`는 첫 줄이 주석(`|1x3 Cross validator`), 라벨에 마침표(`>50K.`)가 붙어 있어
   로딩 단계에서 주석 제외·라벨 표기 통일 처리를 했다.
+
+### 1-4. 결과를 읽을 때의 데이터 한계
+- **평가셋에도 중복 제거를 적용했다.** test는 {cleaning_te["after_na"]:,}행에서
+  {cleaning_te["clean"]:,}행이 됐다. 공식 평가셋을 그대로 쓰지 않았으므로 아래 지표를 다른 참가자와
+  비교할 때는 같은 정제 절차를 썼는지 확인해야 한다.
+- **train과 test에 완전히 같은 행이 {caveats["overlap_rows"]:,}건 있다.** 공식 분할이지만 이만큼은
+  평가가 낙관적으로 치우칠 수 있다. 이번 파이프라인은 이 행들을 제거하지 않았다.
+- **`capital-gain`은 상한 처리된 값이다.** 학습 데이터에서 0인 비율이
+  {caveats["capital_gain_zero_share"]:.1%}이고, {cg_cap}다. 상한값은 실제 금액이 아니라
+  "그 이상"을 뜻하는 표기이므로, 이 변수의 큰 계수를 금액 효과로 읽으면 안 된다.
+- **`relationship`은 `sex`와 거의 겹친다.** 성별 편중도 — {role_purity}.
+  `relationship`을 함께 통제한 상태의 성별 계수는 "가구 내 역할을 고정했을 때의 차이"이므로,
+  성별 전체 격차는 3-1절의 교차표와 카이제곱으로 읽어야 한다.
 
 ## 2. 시각화 (train 기준)
 - `output/eda_charts.png` — 핵심 4패널: 연령 분포, 근로시간 박스플롯, 직업별 고소득 비율, 수치형 상관
@@ -232,6 +271,10 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 - {chisq_stats} -> **{chisq_msg}**
 - Cramer's V={chisq["cramers_v"]:.3f} (표본 크기와 무관한 연관 강도)
 - 성별 고소득 비율: {sex_rates}
+- 최소 기대빈도가 {chisq["expected_min"]:,.0f}이라 Yates 연속성 보정을 쓰지 않았다
+  (보정은 기대빈도가 작은 2x2를 위한 보수적 장치이고, 여기서 쓰면 chi2와 Cramer's V가 낮게 잡힌다).
+- 이 검정은 다른 변수를 통제하지 않은 **전체 연관**이다. 4절의 성별 계수는 학력·직업·근로시간·
+  가구 내 역할을 고정한 뒤의 값이라 크기가 다르며, 둘은 서로 다른 질문에 답한다.
 
 ### 3-2. 소득 그룹 간 주당 근로시간 — Welch t-test
 - 평균: >50K {ttest["mean_high"]:.1f}시간 vs <=50K {ttest["mean_low"]:.1f}시간
@@ -280,18 +323,27 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 {_strategy_md(ab)}
 
 ### 4-3. 계수 해석의 전제
-- 범주형: `drop="first"`로 각 변수의 첫 범주를 빼고 원핫했다. 남은 계수는 **그 기준 범주 대비**
-  조건부 오즈비 `exp(beta)`다. 기준 범주 — {_reference_note(reference)}
+- 범주형: 각 변수에서 기준 범주 하나를 빼고 원핫했다. 남은 계수는 **그 기준 범주 대비**
+  조건부 오즈비 `exp(beta)`다.
+  - 기준 선정 규칙 — {ml["reference_rule"]}
+  - 기준 범주 — {_reference_note(reference)}
+  - 사전순 첫 범주(`drop="first"`)를 쓰면 `native-country`의 기준이 학습 18행짜리 범주가 되어
+    나머지 40개 대비가 모두 불안정해진다. 그래서 표본 최다 범주를 기준으로 삼았다.
+  - `LogisticRegression`은 기본이 L2 정규화라 기준 범주를 바꾸면 계수뿐 아니라 예측도 미세하게
+    달라진다(정규화가 "계수 0"을 기준 범주 대비 0으로 해석하기 때문). 지표를 비교할 때는
+    기준 범주 규칙이 같은지 확인해야 한다.
 - 수치형: StandardScaler 적용 후 계수이므로 **1 표준편차 증가 기준**이다.
   1 표준편차 크기 — {scales}
 - `handle_unknown="ignore"`이므로 학습에 없던 범주는 전부 0으로 인코딩되어 기준 범주와 구분되지 않는다.
 - 계수는 다른 변수를 통제한 상태의 부분효과라 3절의 단순 집계 비율과 부호가 다를 수 있다.
+- 아래 표의 `학습 표본`은 해당 범주와 기준 범주의 학습 행 수다. 표본이 적은 범주의 오즈비는
+  신뢰구간이 넓어 순위를 그대로 읽으면 안 된다. 이 리포트는 계수의 표준오차를 계산하지 않는다.
 
-### 4-4. 고소득 확률을 올리는 요인 (상위 8개)
+### 4-4. 고소득 오즈와 양의 연관이 큰 항목 (상위 8개)
 
 {top_md}
 
-### 4-5. 고소득 확률을 내리는 요인 (하위 8개)
+### 4-5. 고소득 오즈와 음의 연관이 큰 항목 (하위 8개)
 
 {bottom_md}
 
@@ -301,17 +353,24 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 
 sex·race 계수는 1994년 표본에 기록된 조건부 연관이다. 인과관계의 증거가 아니며 개인 평가의 근거로
 사용할 수 없다. 관측되지 않은 교란 변수와 표본 선택의 영향을 통제하지 않았다.
+성별 계수는 `relationship`(Husband/Wife)을 함께 통제한 값인데 이 변수는 성별과 거의 겹치므로
+(1-4절 참고), 성별 전체 격차가 아니라 "가구 내 역할까지 고정했을 때 남는 차이"로 읽어야 한다.
+`native-country` 계수도 마찬가지로 국가별 순위가 아니다. 표본이 수십 행인 범주가 많고
+이민 시기·직종 구성·표본 추출이 통제되지 않았다.
 
 ## 5. 결론 (모두 위 결과에서 계산)
 
 {_conclusions(ttest, chisq, ml, ab)}
 
 ### 5-1. 분석자 해석 (자동 계산 아님)
-- 학습·평가를 서로 다른 파일로 완전히 분리해, 랜덤 분할보다 데이터 누수 위험이 낮고
-  다른 참가자와 지표를 그대로 비교할 수 있는 평가 기준을 확보했다.
+- 학습·평가를 서로 다른 파일로 분리해 랜덤 분할보다 누수 위험이 낮다. 다만 1-4절대로 평가셋에도
+  결측·중복 제거를 적용했고 두 파일에 동일 행이 남아 있으므로, 다른 참가자와 지표를 비교하려면
+  정제 절차부터 맞춰야 한다.
 - 전처리~모델을 Pipeline 하나로 묶어 재현 가능한 학습·배포 단위를 확보했다.
 - 결측 행 삭제는 소득 그룹별 제거율이 달라 표본 구성을 바꾼다. 위 1-3의 제거율 차이를 감안해
   결과를 읽어야 한다.
+- 이 리포트는 계수의 표준오차·신뢰구간과 PR-AUC, 임계값 조정을 다루지 않는다. 순위와 크기를
+  단정적으로 읽지 않도록 주의해야 한다.
 """
     try:
         file_path.write_text(md, encoding="utf-8")

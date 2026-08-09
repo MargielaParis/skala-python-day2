@@ -1,5 +1,7 @@
 """ml 모듈 — Pipeline 학습·평가·저장, 기준 범주와 지표 검증"""
 
+import pandas as pd
+
 from src import ml
 
 
@@ -59,10 +61,40 @@ def test_onehot_drops_one_reference_category_per_feature(sample_df, tmp_path):
         }
 
 
-def test_reference_category_is_first_sorted_level(sample_df, tmp_path):
+def test_reference_category_is_the_most_frequent_level(sample_df, tmp_path):
+    # 사전순 첫 범주를 쓰면 극소 표본이 기준이 될 수 있으므로 표본 최다 범주를 기준으로 삼는다
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
 
-    assert metrics["reference"]["sex"] == sorted(sample_df["sex"].unique())[0]
+    for col in ml.CAT_COLS:
+        counts = sample_df[col].value_counts()
+        assert counts[metrics["reference"][col]] == counts.max()
+
+
+def test_reference_prefers_large_category_over_alphabetical():
+    # native-country=Cambodia(소수) 대신 United-States(다수)가 기준이 되는지 확인
+    df = pd.DataFrame(
+        {col: ["United-States"] * 50 + ["Cambodia"] * 2 for col in ml.CAT_COLS},
+    )
+
+    refs = dict(zip(ml.CAT_COLS, ml.reference_values(df), strict=True))
+
+    assert set(refs.values()) == {"United-States"}
+
+
+def test_reference_breaks_ties_alphabetically():
+    df = pd.DataFrame({col: ["Male", "Female"] * 10 for col in ml.CAT_COLS})
+
+    refs = dict(zip(ml.CAT_COLS, ml.reference_values(df), strict=True))
+
+    assert set(refs.values()) == {"Female"}
+
+
+def test_category_counts_match_training_frequencies(sample_df, tmp_path):
+    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
+
+    counts = metrics["category_counts"]
+    assert set(counts) == set(ml.CAT_COLS)
+    assert counts["sex"] == sample_df["sex"].value_counts().to_dict()
 
 
 def test_numeric_scales_match_training_std(sample_df, tmp_path):

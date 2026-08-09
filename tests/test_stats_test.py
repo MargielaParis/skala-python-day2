@@ -110,3 +110,44 @@ def test_chisq_exits_when_table_is_degenerate(sample_df):
 
     with pytest.raises(SystemExit):
         stats_test.chisq_sex_income(one_sex)
+
+
+def test_chisq_does_not_apply_yates_correction(sample_df):
+    # 기대빈도가 충분히 크면 연속성 보정은 chi2를 낮게 만든다. 보정 없이 계산하고 그 사실을 남긴다
+    from scipy import stats as sp
+
+    result = stats_test.chisq_sex_income(sample_df)
+    table = pd.crosstab(sample_df["sex"], sample_df["income"])
+    uncorrected = sp.chi2_contingency(table, correction=False)[0]
+
+    assert result["correction"] is False
+    assert result["chi2"] == pytest.approx(uncorrected)
+    assert result["expected_min"] > 0
+
+
+def test_data_caveats_reports_overlap_and_topcoding(sample_df):
+    caveats = stats_test.data_caveats(sample_df, sample_df)
+
+    # 같은 프레임을 넘겼으므로 모든 행이 교차 중복이다
+    assert caveats["overlap_rows"] == len(sample_df)
+    assert caveats["capital_gain_cap"] == stats_test.CAPITAL_GAIN_CAP
+    assert 0.0 <= caveats["capital_gain_zero_share"] <= 1.0
+    for share in caveats["role_purity"].values():
+        assert 0.5 <= share <= 1.0
+
+
+def test_data_caveats_measures_sex_role_overlap():
+    # Husband가 전부 Male이면 성별 편중도는 1.0이어야 한다
+    df = pd.DataFrame(
+        {
+            "sex": ["Male"] * 10 + ["Female"] * 10,
+            "relationship": ["Husband"] * 10 + ["Wife"] * 10,
+            "capital-gain": [0] * 20,
+            "income": ["<=50K"] * 20,
+        }
+    )
+
+    caveats = stats_test.data_caveats(df, df.iloc[:0])
+
+    assert caveats["role_purity"] == {"Husband": 1.0, "Wife": 1.0}
+    assert caveats["overlap_rows"] == 0

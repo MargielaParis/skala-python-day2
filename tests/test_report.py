@@ -41,6 +41,7 @@ def report_inputs(sample_df, tmp_path):
     chisq = stats_test.chisq_sex_income(sample_df)
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
     ab = ml.compare_strategies({"drop": (sample_df, sample_df)})
+    caveats = stats_test.data_caveats(sample_df, sample_df)
     return {
         "loading": loading,
         "cleaning": cleaning,
@@ -52,6 +53,7 @@ def report_inputs(sample_df, tmp_path):
         "chisq": chisq,
         "ml": metrics,
         "ab": ab,
+        "caveats": caveats,
     }
 
 
@@ -147,6 +149,42 @@ def test_report_has_no_hardcoded_conclusion_numbers(report_inputs, tmp_path):
 
     assert "오즈비 0.37" not in md
     assert "가장 강한 신호" not in md
+
+
+def test_report_shows_sample_size_behind_each_contrast(report_inputs, tmp_path):
+    # 표본 18행짜리 범주의 오즈비가 27,000행짜리와 똑같이 단정적으로 보이면 안 된다
+    md = _render(report_inputs, tmp_path)
+    counts = report_inputs["ml"]["category_counts"]
+    reference = report_inputs["ml"]["reference"]
+
+    assert "학습 표본" in md
+    assert f"기준 {counts['sex'][reference['sex']]:,}" in md
+
+
+def test_report_discloses_data_caveats(report_inputs, tmp_path):
+    md = _render(report_inputs, tmp_path)
+    caveats = report_inputs["caveats"]
+
+    assert "데이터 한계" in md
+    assert f"{caveats['overlap_rows']:,}건" in md  # train/test 교차 중복
+    assert "capital-gain" in md and "상한" in md  # top-coding
+    assert "relationship" in md  # sex와의 겹침
+    assert "성별 정체성" in md  # 1994년 행정 분류 표기
+
+
+def test_report_uses_association_wording_not_causal(report_inputs, tmp_path):
+    md = _render(report_inputs, tmp_path)
+
+    assert "고소득 오즈와 양의 연관이 큰 항목" in md
+    assert "고소득 확률을 올리는 요인" not in md
+
+
+def test_report_does_not_claim_directly_comparable_metrics(report_inputs, tmp_path):
+    # 평가셋에도 정제를 적용했으므로 "그대로 비교 가능"이라고 쓰면 1-4절과 모순된다
+    md = _render(report_inputs, tmp_path)
+
+    assert "그대로 비교할 수 있는" not in md
+    assert "정제 절차부터 맞춰야" in md
 
 
 def test_report_compares_missing_value_strategies(report_inputs, tmp_path):

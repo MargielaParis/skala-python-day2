@@ -31,16 +31,36 @@ TARGET = "income"
 POSITIVE = ">50K"
 # 제외 컬럼: fnlwgt(표본 가중치, 개인 속성이 아님), education(education-num과 1:1 중복)
 DROPPED = ["fnlwgt", "education"]
-# 범주마다 첫 값을 빼서 기준 범주로 삼는다 — 남은 계수가 곧 "기준 대비" 대비값이 된다
-DROP_RULE = "first"
+# 기준 범주 선정 규칙 — 리포트에 그대로 싣는다
+REFERENCE_RULE = "각 범주형 변수에서 학습 표본이 가장 많은 범주 (동수면 사전순 앞)"
 
 
-def build_pipeline():
+def reference_values(df):
+    # 기준 범주를 표본 최다 범주로 고른다.
+    # drop="first"(사전순)는 native-country=Cambodia(학습 18행)처럼 극소 표본을 기준으로 잡아
+    # 나머지 40개 범주의 대비를 전부 불안정하게 만든다. 동수일 때는 사전순으로 확정한다.
+    refs = []
+    for col in CAT_COLS:
+        counts = df[col].value_counts()
+        refs.append(counts[counts == counts.max()].index.min())
+    return np.array(refs, dtype=object)
+
+
+def category_counts(df):
+    # 계수 표에 "이 대비가 몇 개 표본에서 나왔는지"를 함께 싣기 위한 범주별 학습 표본 수
+    return {col: df[col].value_counts().to_dict() for col in CAT_COLS}
+
+
+def build_pipeline(df_train):
     # 수치 스케일링 + 범주 원핫(기준 범주 제외) + 로지스틱 회귀를 하나의 Pipeline으로 결합
     preproc = ColumnTransformer(
         [
             ("num", StandardScaler(), NUM_COLS),
-            ("cat", OneHotEncoder(handle_unknown="ignore", drop=DROP_RULE), CAT_COLS),
+            (
+                "cat",
+                OneHotEncoder(handle_unknown="ignore", drop=reference_values(df_train)),
+                CAT_COLS,
+            ),
         ]
     )
     return Pipeline([("prep", preproc), ("clf", LogisticRegression(max_iter=1000))])
@@ -79,7 +99,7 @@ def fit_score(df_train, df_test):
     X_train, y_train = split_xy(df_train)
     X_test, y_test = split_xy(df_test)
 
-    model = build_pipeline()
+    model = build_pipeline(X_train)
     model.fit(X_train, y_train)
     pred = model.predict(X_test)
     proba = model.predict_proba(X_test)[:, 1]
@@ -126,6 +146,8 @@ def train_and_evaluate(df_train, df_test, model_path):
             "n_features": len(coef),
             "coef": coef,
             "reference": reference_categories(model),
+            "reference_rule": REFERENCE_RULE,
+            "category_counts": category_counts(df_train),
             "numeric_scales": numeric_scales(model),
             "num_cols": NUM_COLS,
             "cat_cols": CAT_COLS,

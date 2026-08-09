@@ -159,20 +159,17 @@ if __name__ == "__main__":
     print("\n4) 결측 처리 A/B — dropna vs 범주형 Unknown 보존")
     unknown_train, _ = load.clean(raw_train, strategy=load.UNKNOWN)
     unknown_test, _ = load.clean(raw_test, strategy=load.UNKNOWN)
-    ab = ml.compare_strategies(
-        {
-            load.DROP: (df_train, df_test),
-            load.UNKNOWN: (unknown_train, unknown_test),
-        }
-    )
+    # drop 전략은 위에서 이미 학습·평가했으므로 그 지표를 재사용한다 (같은 모델을 두 번 학습하지 않는다)
+    ab = {load.DROP: metrics} | ml.compare_strategies({load.UNKNOWN: (unknown_train, unknown_test)})
     for name, m in ab.items():
         print(
             f"  {name:<8} 학습 {m['train']:,}건 -> 정확도 {m['accuracy']:.4f} / "
             f"정밀도 {m['precision']:.4f} / 재현율 {m['recall']:.4f} / F1 {m['f1']:.4f}"
         )
 
-    print("\n4) 회귀계수 — 고소득 확률을 올리는/내리는 상위 5개 (기준 범주 대비 오즈비)")
+    print("\n4) 회귀계수 — 고소득 오즈와 연관이 큰 상위 5개 (기준 범주 대비 오즈비)")
     coef = metrics["coef"]
+    print(f"  기준 선정: {metrics['reference_rule']}")
     print(f"  기준 범주: {metrics['reference']}")
     for name, row in coef.tail(5)[::-1].iterrows():
         print(f"  + {name:<32} {row['coef']:+.3f}  odds x{row['odds_ratio']:.2f}")
@@ -184,6 +181,13 @@ if __name__ == "__main__":
 
     print("\n" + "=" * 80)
     print("\n5) 자동화 — report.md 생성")
+    caveats = stats_test.data_caveats(df_train, df_test)
+    print(
+        f"데이터 한계: train/test 동일 행 {caveats['overlap_rows']}건, "
+        f"capital-gain 상한값 {caveats['capital_gain_capped']}행, "
+        f"relationship 성별 편중 "
+        + ", ".join(f"{k} {v:.1%}" for k, v in caveats["role_purity"].items())
+    )
     report.write_report(
         REPORT_FILE,
         loading=loading,
@@ -196,6 +200,7 @@ if __name__ == "__main__":
         chisq=chisq,
         ml=metrics,
         ab=ab,
+        caveats=caveats,
     )
     print(f"저장 완료 -> {REPORT_FILE.name}")
 
