@@ -106,6 +106,13 @@ python main.py
 | `mypy` | 정적 타입 검사 |
 | `pytest` | 테스트 전체 실행 |
 
+위 검사는 `pre-commit install`로 훅을 설치한 클론에서만 동작한다. 새로 clone한 뒤 설치를
+건너뛰면 커밋이 아무 검사 없이 통과하므로, 먼저 훅이 걸려 있는지 확인한다.
+
+```bash
+ls .git/hooks/pre-commit    # 없으면 pre-commit install 을 실행한다
+```
+
 전체 파일을 한 번에 검사하려면 아래를 실행한다. `no-commit-to-branch` 훅은 `main`에서 의도적으로
 실패하므로 작업 브랜치에서 실행해야 전체 통과를 확인할 수 있다.
 
