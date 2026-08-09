@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
+from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
@@ -19,11 +20,11 @@ from sklearn.metrics import (
     recall_score,
     roc_auc_score,
 )
+from sklearn.model_selection import cross_val_predict
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .errors import PipelineError
-from .load import CAPITAL_GAIN_CAP
 
 # fnlwgt(표본 가중치)·education(education-num과 중복)은 피처에서 제외
 NUM_COLS = ["age", "education-num", "capital-gain", "capital-loss", "hours-per-week"]
@@ -36,9 +37,6 @@ CAT_COLS = [
     "sex",
     "native-country",
 ]
-# capital-gain은 99999로 상한 처리돼 있다. "상한에 걸림"과 "금액이 큼"을 분리하는 지시변수
-CAP_FLAG = "capital-gain-capped"
-FLAG_COLS = [CAP_FLAG]
 TARGET = "income"
 POSITIVE = ">50K"
 # 제외 컬럼: fnlwgt(표본 가중치, 개인 속성이 아님), education(education-num과 1:1 중복)
@@ -46,6 +44,7 @@ DROPPED = ["fnlwgt", "education"]
 # 기준 범주 선정 규칙 — 리포트에 그대로 싣는다
 REFERENCE_RULE = "각 범주형 변수에서 학습 표본이 가장 많은 범주 (동수면 사전순 앞)"
 ALPHA = 0.05  # 계수 신뢰구간의 유의수준
+THRESHOLD_CV = 5  # 임계값 탐색용 교차검증 분할 수
 
 
 def reference_values(df: pd.DataFrame, cat_cols: list[str] | None = None) -> np.ndarray:
@@ -65,13 +64,11 @@ def category_counts(df: pd.DataFrame) -> dict[str, dict[Any, int]]:
 
 
 def build_pipeline(X_train: pd.DataFrame, cat_cols: list[str] | None = None) -> Pipeline:
-    # 수치 스케일링 + 상한 지시변수 통과 + 범주 원핫(기준 범주 제외) + 로지스틱 회귀
+    # 수치 스케일링 + 범주 원핫(기준 범주 제외) + 로지스틱 회귀를 하나의 Pipeline으로 결합
     cats = CAT_COLS if cat_cols is None else cat_cols
     preproc = ColumnTransformer(
         [
             ("num", StandardScaler(), NUM_COLS),
-            # 0/1 지시변수는 스케일링하지 않아야 계수를 "0 -> 1일 때"로 바로 읽을 수 있다
-            ("flag", "passthrough", FLAG_COLS),
             (
                 "cat",
                 OneHotEncoder(handle_unknown="ignore", drop=reference_values(X_train, cats)),
@@ -131,12 +128,6 @@ def coefficient_stats(model: Pipeline, X_train: pd.DataFrame, alpha: float = ALP
     return table.sort_values("coef")
 
 
-def coefficients(model: Pipeline) -> pd.DataFrame:
-    # 표준오차 없이 계수와 오즈비만 필요할 때 쓰는 가벼운 버전
-    coef = pd.Series(model.named_steps["clf"].coef_[0], index=feature_names(model)).sort_values()
-    return pd.DataFrame({"coef": coef, "odds_ratio": np.exp(coef)})
-
-
 def reference_categories(model: Pipeline, cat_cols: list[str] | None = None) -> dict[str, Any]:
     # drop으로 빠진 범주 = 오즈비 해석의 기준. 남은 계수는 모두 이 기준 대비 값이다
     cats = CAT_COLS if cat_cols is None else cat_cols
@@ -155,11 +146,9 @@ def numeric_scales(model: Pipeline) -> dict[str, float]:
 
 
 def split_xy(df: pd.DataFrame, cat_cols: list[str] | None = None) -> tuple[pd.DataFrame, pd.Series]:
-    # 피처 행렬과 이진 타깃(>50K=1) 분리. 상한 지시변수는 여기서 파생한다
+    # 피처 행렬과 이진 타깃(>50K=1) 분리
     cats = CAT_COLS if cat_cols is None else cat_cols
-    X = df[NUM_COLS + cats].copy()
-    X[CAP_FLAG] = df["capital-gain"].eq(CAPITAL_GAIN_CAP).astype(int)
-    return X, df[TARGET].eq(POSITIVE).astype(int)
+    return df[NUM_COLS + cats], df[TARGET].eq(POSITIVE).astype(int)
 
 
 def _score(y_true: pd.Series, pred: np.ndarray, proba: np.ndarray) -> dict[str, Any]:
@@ -177,23 +166,37 @@ def _score(y_true: pd.Series, pred: np.ndarray, proba: np.ndarray) -> dict[str, 
     }
 
 
+def _best_f1_threshold(y_true: pd.Series, proba: np.ndarray) -> float:
+    precisions, recalls, thresholds = precision_recall_curve(y_true, proba)
+    if not len(thresholds):
+        return 0.5
+    denom = precisions + recalls
+    f1_grid = np.divide(2 * precisions * recalls, denom, out=np.zeros_like(denom), where=denom > 0)
+    return float(thresholds[int(np.argmax(f1_grid[:-1]))])
+
+
 def threshold_analysis(
     model: Pipeline,
     X_train: pd.DataFrame,
     y_train: pd.Series,
     X_test: pd.DataFrame,
     y_test: pd.Series,
+    cv: int = THRESHOLD_CV,
 ) -> dict[str, Any]:
-    # 기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 "학습셋에서" 찾아 평가셋에 적용한다.
-    # 평가셋에서 고르면 그 자체가 평가셋에 대한 과적합이 된다.
-    proba_train = model.predict_proba(X_train)[:, 1]
-    precisions, recalls, thresholds = precision_recall_curve(y_train, proba_train)
-    denom = precisions + recalls
-    f1_grid = np.divide(2 * precisions * recalls, denom, out=np.zeros_like(denom), where=denom > 0)
-    best = float(thresholds[int(np.argmax(f1_grid[:-1]))]) if len(thresholds) else 0.5
+    # 기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 따로 찾는다.
+    #
+    # 평가셋에서 고르면 평가셋에 대한 과적합이고, 학습셋 예측으로 고르면 모델이 이미 그 데이터에
+    # 적합돼 있어 낙관적이다. 그래서 교차검증 out-of-fold 확률로 고른다 —
+    # 각 행의 확률이 그 행을 보지 못한 모델에서 나오므로 "처음 보는 데이터"에 가장 가깝다.
+    try:
+        oof = cross_val_predict(clone(model), X_train, y_train, cv=cv, method="predict_proba")[:, 1]
+    except ValueError as e:
+        raise PipelineError(f"임계값 탐색용 교차검증 실패: {e}") from e
+    best = _best_f1_threshold(y_train, oof)
 
     proba_test = model.predict_proba(X_test)[:, 1]
     return {
+        "cv": cv,
         "default": {
             "threshold": 0.5,
             **_score(y_test, (proba_test >= 0.5).astype(int), proba_test),
@@ -227,9 +230,13 @@ def fit_score(
     return model, X_test, pred, metrics
 
 
-def compare_strategies(datasets: dict[str, tuple[pd.DataFrame, pd.DataFrame]]) -> dict[str, Any]:
-    # {결측 전략: (train_df, test_df)} -> {전략: 지표 dict}. 결측 처리 방식 A/B 비교용
-    return {name: fit_score(tr, te)[3] for name, (tr, te) in datasets.items()}
+def compare_strategies(
+    train_sets: dict[str, pd.DataFrame], df_test: pd.DataFrame
+) -> dict[str, Any]:
+    # 결측 처리 방식 A/B 비교. 전략마다 학습셋은 다르지만 **평가셋은 하나로 고정한다**.
+    # 전략별 평가셋을 따로 쓰면 행 수(15,055 vs 16,276)와 사례 구성이 달라져
+    # 정확도·F1을 나란히 놓고 비교할 수 없다.
+    return {name: fit_score(tr, df_test)[3] for name, tr in train_sets.items()}
 
 
 def sensitivity_without(
@@ -281,7 +288,6 @@ def train_and_evaluate(
             "thresholds": threshold_analysis(model, X_train, y_train, X_test, split_xy(df_test)[1]),
             "num_cols": NUM_COLS,
             "cat_cols": CAT_COLS,
-            "flag_cols": FLAG_COLS,
             "dropped": DROPPED,
             "alpha": ALPHA,
         }

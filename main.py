@@ -145,9 +145,9 @@ def run() -> None:
     print("\n4) ML Pipeline — adult.data 학습 / adult.test 평가·저장")
     metrics = ml.train_and_evaluate(df_train, df_test, MODEL_FILE)
     print(
-        f"피처: 수치 {len(metrics['num_cols'])}개 + 지시 {len(metrics['flag_cols'])}개 + "
-        f"범주 {len(metrics['cat_cols'])}개(sex·race 포함) -> 원핫(기준 범주 제외) 후 "
-        f"{metrics['n_features']}개, 제외 {metrics['dropped']}"
+        f"피처: 수치 {len(metrics['num_cols'])}개 + 범주 {len(metrics['cat_cols'])}개"
+        f"(sex·race 포함) -> 원핫(기준 범주 제외) 후 {metrics['n_features']}개, "
+        f"제외 {metrics['dropped']}"
     )
     print(
         f"학습 {metrics['train']:,}건 (>50K 비율 {metrics['train_pos_rate']:.3f}) / "
@@ -168,15 +168,15 @@ def run() -> None:
     tuned = metrics["thresholds"]["tuned"]
     print(
         f"\n4) 임계값 — 기본 0.500 재현율 {metrics['recall']:.4f}(FN {cm['fn']:,}) vs "
-        f"학습셋 F1 최적 {tuned['threshold']:.3f} 재현율 {tuned['recall']:.4f}"
-        f"(FN {tuned['confusion']['fn']:,})"
+        f"{metrics['thresholds']['cv']}-폴드 교차검증 F1 최적 {tuned['threshold']:.3f} "
+        f"재현율 {tuned['recall']:.4f}(FN {tuned['confusion']['fn']:,})"
     )
 
-    print("\n4) 결측 처리 A/B — dropna vs 범주형 Unknown 보존")
+    print("\n4) 결측 처리 A/B — dropna vs 범주형 Unknown 보존 (평가셋 고정)")
     unknown_train, _ = load.clean(raw_train, strategy=load.UNKNOWN)
-    unknown_test, _ = load.clean(raw_test, strategy=load.UNKNOWN)
-    # drop 전략은 위에서 이미 학습·평가했으므로 그 지표를 재사용한다 (같은 모델을 두 번 학습하지 않는다)
-    ab = {load.DROP: metrics} | ml.compare_strategies({load.UNKNOWN: (unknown_train, unknown_test)})
+    # 학습셋만 바꾸고 평가셋은 df_test로 고정한다. 전략별 평가셋을 따로 쓰면 비교가 성립하지 않는다.
+    # drop 전략은 위에서 이미 같은 평가셋으로 학습·평가했으므로 그 지표를 재사용한다.
+    ab = {load.DROP: metrics} | ml.compare_strategies({load.UNKNOWN: unknown_train}, df_test)
     for name, m in ab.items():
         print(
             f"  {name:<8} 학습 {m['train']:,}건 -> 정확도 {m['accuracy']:.4f} / "
@@ -219,6 +219,7 @@ def run() -> None:
     caveats = stats_test.data_caveats(df_train, df_test)
     print(
         f"데이터 한계: train/test 동일 행 {caveats['overlap_rows']}건, "
+        f"미지 범주 행 {caveats['unseen_category_rows']}건, "
         f"capital-gain 상한값 {caveats['capital_gain_capped']}행, "
         f"relationship 성별 편중 "
         + ", ".join(f"{k} {v:.1%}" for k, v in caveats["role_purity"].items())

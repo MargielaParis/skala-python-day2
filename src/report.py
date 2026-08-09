@@ -38,16 +38,11 @@ def _annotate(
     reference: dict[str, Any],
     counts: dict[str, dict[Any, int]],
     n_train: int,
-    flag_cols: list[str],
 ) -> str:
     # 각 계수가 무엇과 비교된 값인지, 그 대비를 만든 표본 수, 신뢰구간을 함께 적는다.
     # 표본 수와 구간이 없으면 18행짜리 범주의 오즈비가 27,000행짜리와 똑같이 단정적으로 보인다.
     basis, sizes = [], []
     for name in coef_slice.index:
-        if name in flag_cols:
-            basis.append("지시변수 0 -> 1")
-            sizes.append(f"{n_train:,}")
-            continue
         feature = next((c for c in reference if name.startswith(f"{c}_")), None)
         if feature is None:
             basis.append("1 표준편차 증가")
@@ -106,7 +101,7 @@ def _confusion_md(cm: dict[str, int], positive: str = ">50K") -> str:
 def _threshold_md(thresholds: dict[str, Any]) -> str:
     header = "| 임계값 | 정확도 | 정밀도 | 재현율 | F1 | 놓친 고소득(FN) | 잘못 잡은 저소득(FP) |"
     rows = [header, "|---|---:|---:|---:|---:|---:|---:|"]
-    for label, key in (("기본값", "default"), ("학습셋 F1 최적", "tuned")):
+    for label, key in (("기본값", "default"), ("교차검증 F1 최적", "tuned")):
         m = thresholds[key]
         rows.append(
             f"| {label} {m['threshold']:.3f} | {m['accuracy']:.4f} | {m['precision']:.4f} | "
@@ -191,16 +186,33 @@ def _conclusions(
         f"재현율 {ml['recall']:.4f}, F1 {ml['f1']:.4f}, ROC-AUC {ml['roc_auc']:.4f}, "
         f"PR-AUC {ml['pr_auc']:.4f}다. 실제 고소득 {cm['tp'] + cm['fn']:,}명 중 "
         f"{cm['fn']:,}명을 저소득으로 놓쳤다.",
-        f"- 임계값을 학습셋 F1 최적값 {tuned['threshold']:.3f}으로 바꾸면 재현율이 "
+        f"- 임계값을 교차검증 F1 최적값 {tuned['threshold']:.3f}으로 바꾸면 재현율이 "
         f"{ml['recall']:.4f}에서 {tuned['recall']:.4f}로, 놓친 고소득이 "
         f"{cm['fn']:,}명에서 {tuned['confusion']['fn']:,}명으로 바뀐다.",
     ]
     if best:
-        lines.append(
-            f"- 결측 처리 방식은 F1 기준 '{STRATEGY_LABEL.get(best, best)}'가 "
-            f"{ab[best]['f1']:.4f}로 가장 높았다."
-        )
+        lines.append(f"- {_strategy_verdict(ab, best)}")
     return "\n".join(lines)
+
+
+# F1 차이가 이 값보다 작으면 순위를 말하지 않는다. 계수 구간도 안 내는 리포트에서
+# 0.001 차이로 우열을 선언하면 과장이 된다
+STRATEGY_TIE_GAP = 0.01
+
+
+def _strategy_verdict(ab: dict[str, Any], best: str) -> str:
+    # "어느 전략이 이겼다"를 f1 격차에서 파생시킨다 (고정 문장을 두지 않기 위함)
+    scores = sorted((m["f1"] for m in ab.values()), reverse=True)
+    gap = scores[0] - scores[-1] if len(scores) > 1 else 0.0
+    if len(scores) > 1 and gap < STRATEGY_TIE_GAP:
+        return (
+            f"결측 처리 방식은 같은 평가셋에서 F1 격차가 {gap:.4f}에 그쳐 우열을 가릴 수 없다 "
+            f"(최고 {scores[0]:.4f} / 최저 {scores[-1]:.4f}). 지표만으로 방식을 고를 근거는 없다."
+        )
+    return (
+        f"결측 처리 방식은 F1 기준 '{STRATEGY_LABEL.get(best, best)}'가 "
+        f"{ab[best]['f1']:.4f}로 가장 높았다 (격차 {gap:.4f})."
+    )
 
 
 def _sensitivity_summary(sensitivity: dict[str, Any]) -> str:
@@ -239,15 +251,11 @@ def write_report(
     corr_pair = corr.loc["education-num", "hours-per-week"]
     coef = ml["coef"]
     reference = ml["reference"]
-    counts, n_train, flags = ml["category_counts"], ml["train"], ml["flag_cols"]
-    top_md = _annotate(coef.tail(8)[::-1], reference, counts, n_train, flags)
-    bottom_md = _annotate(coef.head(8), reference, counts, n_train, flags)
+    counts, n_train = ml["category_counts"], ml["train"]
+    top_md = _annotate(coef.tail(8)[::-1], reference, counts, n_train)
+    bottom_md = _annotate(coef.head(8), reference, counts, n_train)
     demo_md = _annotate(
-        coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1],
-        reference,
-        counts,
-        n_train,
-        flags,
+        coef.loc[coef.index.str.startswith(("sex_", "race_"))][::-1], reference, counts, n_train
     )
 
     ttest_msg = (
@@ -280,10 +288,13 @@ def write_report(
         f"{caveats['capital_gain_capped']:,}행이 상한값 {caveats['capital_gain_cap']:,}이고 "
         f"그중 고소득 비율은 {caveats['capital_gain_capped_pos_rate']:.1%}"
     )
-    flag_note = ", ".join(ml["flag_cols"])
     feature_summary = (
-        f"수치형 {n_num}개 + 지시변수 {len(ml['flag_cols'])}개 + "
-        f"범주형 {n_cat}개(sex·race 포함), 원핫 인코딩 후 {n_feat}개"
+        f"수치형 {n_num}개 + 범주형 {n_cat}개(sex·race 포함), 원핫 인코딩 후 {n_feat}개"
+    )
+    unseen_note = (
+        f"{caveats['unseen_category_rows']:,}행 / {caveats['test_rows']:,}행"
+        if caveats["test_rows"]
+        else "평가셋 없음"
     )
 
     md = f"""# Adult Census Income — End2End 분석 리포트
@@ -343,7 +354,11 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
   평가가 낙관적으로 치우칠 수 있다. 이번 파이프라인은 이 행들을 제거하지 않았다.
 - **`capital-gain`은 상한 처리된 값이다.** 학습 데이터에서 0인 비율이
   {caveats["capital_gain_zero_share"]:.1%}이고, {cg_cap}다. 상한값은 실제 금액이 아니라
-  "그 이상"을 뜻하는 표기이므로, 금액과 상한 도달을 분리하려고 `{flag_note}` 지시변수를 따로 넣었다.
+  "그 이상"을 뜻하는 표기이므로 이 변수의 큰 계수를 금액 효과로 읽으면 안 된다.
+  상한 도달 여부를 별도 지시변수로 분리해봤지만 `capital-gain`과 상관이 0.94라 따로 식별되지 않았고
+  (계수 구간 [0.14, 7.14], 사후분포가 사전분포와 사실상 같음) 모델에서 뺐다.
+- **학습에 없던 범주가 평가셋에 있으면 전부 0으로 인코딩된다.** 이번 실행에서 해당 행은
+  {unseen_note}다. 0이 아니라면 그 행들은 기준 범주와 구분되지 않은 채 예측된 것이다.
 - **`relationship`은 `sex`와 거의 겹친다.** 성별 편중도 — {role_purity}.
   `relationship`을 함께 통제한 상태의 성별 계수는 "가구 내 역할을 고정했을 때의 차이"이므로,
   성별 전체 격차는 3-1절의 교차표와 카이제곱으로, 통제 의존도는 4-8절의 민감도 분석으로 읽어야 한다.
@@ -385,11 +400,9 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 {describe.round(2).to_markdown()}
 
 ## 4. ML Pipeline (소득 >50K 로지스틱 회귀)
-- 구성: StandardScaler + 상한 지시변수 passthrough + OneHotEncoder(기준 범주 제외)
-  -> LogisticRegression (단일 Pipeline)
+- 구성: StandardScaler + OneHotEncoder(기준 범주 제외) -> LogisticRegression (단일 Pipeline)
 - 피처: {feature_summary}
   - 수치형: {num_cols}
-  - 지시변수: {flag_note}
   - 범주형: {cat_cols}
   - 제외: {dropped} (fnlwgt는 표본 가중치, education은 education-num과 1:1 중복)
 - 학습(adult.data) {ml["train"]:,}건 / 평가(adult.test) {ml["test"]:,}건
@@ -419,8 +432,9 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
   {ml["confusion"]["fp"]:,}명을 고소득으로 잘못 예측했다.
 
 ### 4-2. 분류 임계값
-기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 **학습셋에서** 찾아 평가셋에 적용했다
-(평가셋에서 고르면 그 자체가 평가셋에 대한 과적합이다).
+기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 **학습셋 {ml["thresholds"]["cv"]}-폴드
+교차검증의 out-of-fold 확률에서** 찾아 평가셋에 적용했다. 평가셋에서 고르면 평가셋에 대한
+과적합이고, 학습셋 예측(in-sample)으로 고르면 모델이 이미 그 데이터에 적합돼 있어 낙관적이다.
 
 {_threshold_md(ml["thresholds"])}
 
@@ -428,7 +442,10 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
 어느 쪽이 큰지에 달려 있고, 그 판단은 데이터가 아니라 용도에서 나온다.
 
 ### 4-3. 결측 처리 방식 A/B 비교
-같은 Pipeline으로 결측 처리만 바꿔 학습·평가한 결과다.
+같은 Pipeline으로 결측 처리만 바꿔 학습한 결과다.
+**평가셋은 두 전략 모두 정제 후 test {ml["test"]:,}행으로 고정했다.** 전략별로 평가셋을 따로 쓰면
+행 수와 사례 구성이 달라져(결측 보존 시 {cleaning_te["raw"]:,}행 중 더 많이 남는다) 지표를 나란히
+비교할 수 없다.
 
 {_strategy_md(ab)}
 
@@ -443,7 +460,6 @@ Polars에는 Pandas의 `skipinitialspace`에 해당하는 옵션이 없어, 그�
     달라진다. 지표를 비교할 때는 기준 범주 규칙이 같은지 확인해야 한다.
 - 수치형: StandardScaler 적용 후 계수이므로 **1 표준편차 증가 기준**이다.
   1 표준편차 크기 — {scales}
-- 지시변수(`{flag_note}`)는 스케일링하지 않아 계수를 **0에서 1로 바뀔 때**로 그대로 읽는다.
 - **오즈비 95% 구간**은 L2 정규화를 가우시안 사전분포로 본 라플라스 근사에서 얻은 값이다
   (사후 정밀도 `Z'WZ + I/C`). 정확한 Wald 신뢰구간이 아니고, 정규화 때문에 계수 자체도
   0 쪽으로 수축돼 있다. 구간이 1을 포함하면 방향조차 단정할 수 없다는 뜻으로 읽으면 된다.

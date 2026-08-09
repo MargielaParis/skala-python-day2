@@ -41,7 +41,7 @@ def report_inputs(sample_df, tmp_path):
     ttest = stats_test.ttest_hours_by_income(sample_df)
     chisq = stats_test.chisq_sex_income(sample_df)
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
-    ab = ml.compare_strategies({"drop": (sample_df, sample_df)})
+    ab = ml.compare_strategies({"drop": sample_df}, sample_df)
     caveats = stats_test.data_caveats(sample_df, sample_df)
     sensitivity = ml.sensitivity_without(sample_df, sample_df, "relationship")
     return {
@@ -190,6 +190,28 @@ def test_report_does_not_claim_directly_comparable_metrics(report_inputs, tmp_pa
     assert "정제 절차부터 맞춰야" in md
 
 
+def test_strategy_verdict_declines_to_rank_a_tie(report_inputs, tmp_path):
+    # F1 격차가 0.001 수준이면 "가장 높았다"고 쓰면 안 된다
+    tied = copy.deepcopy(report_inputs)
+    base = dict(tied["ab"]["drop"])
+    tied["ab"] = {"drop": base, "unknown": {**base, "f1": base["f1"] - 0.0008}}
+
+    md = _render(tied, tmp_path, "tie.md")
+
+    assert "우열을 가릴 수 없다" in md
+    assert "가장 높았다" not in md
+
+
+def test_strategy_verdict_names_a_winner_when_gap_is_real(report_inputs, tmp_path):
+    clear = copy.deepcopy(report_inputs)
+    base = dict(clear["ab"]["drop"])
+    clear["ab"] = {"drop": base, "unknown": {**base, "f1": base["f1"] - 0.2}}
+
+    md = _render(clear, tmp_path, "clear.md")
+
+    assert "가장 높았다" in md
+
+
 def test_report_compares_missing_value_strategies(report_inputs, tmp_path):
     md = _render(report_inputs, tmp_path)
 
@@ -220,6 +242,23 @@ def test_report_includes_threshold_analysis(report_inputs, tmp_path):
     assert "## 4. ML Pipeline" in md and "4-2. 분류 임계값" in md
     assert "PR-AUC" in md
     assert f"{tuned['threshold']:.3f}" in md
+    assert "out-of-fold" in md  # 임계값 탐색 방법을 밝힌다
+
+
+def test_report_states_the_ab_test_set_is_shared(report_inputs, tmp_path):
+    # 전략별 평가셋이 다르면 비교가 성립하지 않으므로, 고정했다는 사실을 밝혀야 한다
+    md = _render(report_inputs, tmp_path)
+
+    assert "평가셋은 두 전략 모두" in md
+    assert "나란히" in md
+
+
+def test_report_reports_unseen_category_rows(report_inputs, tmp_path):
+    md = _render(report_inputs, tmp_path)
+    caveats = report_inputs["caveats"]
+
+    assert "학습에 없던 범주가 평가셋에 있으면" in md
+    assert f"{caveats['unseen_category_rows']:,}행" in md
 
 
 def test_report_includes_sensitivity_section(report_inputs, tmp_path):

@@ -129,12 +129,24 @@ def test_chisq_does_not_apply_yates_correction(sample_df):
 def test_data_caveats_reports_overlap_and_topcoding(sample_df):
     caveats = stats_test.data_caveats(sample_df, sample_df)
 
-    # 같은 프레임을 넘겼으므로 모든 행이 교차 중복이다
+    # 같은 프레임을 넘겼으므로 모든 행이 교차 중복이고 미지 범주는 없다
     assert caveats["overlap_rows"] == len(sample_df)
+    assert caveats["unseen_category_rows"] == 0
+    assert caveats["test_rows"] == len(sample_df)
     assert caveats["capital_gain_cap"] == stats_test.CAPITAL_GAIN_CAP
     assert 0.0 <= caveats["capital_gain_zero_share"] <= 1.0
     for share in caveats["role_purity"].values():
         assert 0.5 <= share <= 1.0
+
+
+def test_data_caveats_counts_unseen_categories(sample_df):
+    # 학습에 없던 범주는 all-zero로 인코딩돼 기준 범주와 구분되지 않는다. 몇 건인지 세어야 한다
+    unseen = sample_df.copy()
+    unseen.loc[unseen.index[:4], "occupation"] = "Never-seen-job"
+
+    caveats = stats_test.data_caveats(sample_df, unseen)
+
+    assert caveats["unseen_category_rows"] == 4
 
 
 def test_data_caveats_measures_sex_role_overlap():

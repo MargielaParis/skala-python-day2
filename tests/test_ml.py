@@ -1,5 +1,6 @@
 """ml 모듈 — Pipeline 학습·평가·저장, 기준 범주와 지표 검증"""
 
+import numpy as np
 import pandas as pd
 
 from src import ml
@@ -9,7 +10,7 @@ def test_split_xy_excludes_dropped_columns(sample_df):
     X, y = ml.split_xy(sample_df)
 
     assert not set(ml.DROPPED) & set(X.columns)
-    assert list(X.columns) == ml.NUM_COLS + ml.CAT_COLS + ml.FLAG_COLS
+    assert list(X.columns) == ml.NUM_COLS + ml.CAT_COLS
     assert set(y.unique()) == {0, 1}
 
 
@@ -105,32 +106,15 @@ def test_numeric_scales_match_training_std(sample_df, tmp_path):
     assert metrics["numeric_scales"]["age"] == sample_df["age"].std(ddof=0)
 
 
-def test_compare_strategies_scores_each_dataset(sample_df):
-    scores = ml.compare_strategies({"a": (sample_df, sample_df), "b": (sample_df, sample_df)})
+def test_compare_strategies_uses_one_shared_test_set(sample_df):
+    # 전략마다 평가셋이 다르면 행 수와 사례 구성이 달라 지표를 나란히 비교할 수 없다
+    bigger = pd.concat([sample_df, sample_df.head(10)], ignore_index=True)
+
+    scores = ml.compare_strategies({"a": sample_df, "b": bigger}, sample_df)
 
     assert set(scores) == {"a", "b"}
-    assert scores["a"]["f1"] == scores["b"]["f1"]
-
-
-def test_capital_gain_cap_becomes_its_own_flag(sample_df):
-    # 99999는 실제 금액이 아니라 상한 표기이므로 금액과 분리해 지시변수로 넣는다
-    capped = sample_df.copy()
-    capped.loc[capped.index[:3], "capital-gain"] = ml.CAPITAL_GAIN_CAP
-
-    X, _ = ml.split_xy(capped)
-
-    assert ml.CAP_FLAG in X.columns
-    assert X[ml.CAP_FLAG].sum() == 3
-    assert set(X[ml.CAP_FLAG].unique()) <= {0, 1}
-
-
-def test_flag_is_not_standardised(sample_df, tmp_path):
-    # 지시변수를 스케일링하면 계수를 "0 -> 1일 때"로 읽을 수 없다
-    metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
-
-    assert metrics["flag_cols"] == [ml.CAP_FLAG]
-    assert set(metrics["numeric_scales"]) == set(ml.NUM_COLS)
-    assert ml.CAP_FLAG not in metrics["numeric_scales"]
+    assert scores["a"]["test"] == scores["b"]["test"] == len(sample_df)
+    assert scores["a"]["train"] != scores["b"]["train"]
 
 
 def test_coefficient_stats_report_uncertainty(sample_df, tmp_path):
@@ -161,14 +145,21 @@ def test_metrics_include_pr_auc(sample_df, tmp_path):
     assert 0.0 <= metrics["pr_auc"] <= 1.0
 
 
-def test_threshold_analysis_tunes_on_train_not_test(sample_df, tmp_path):
+def test_threshold_is_tuned_on_out_of_fold_probabilities(sample_df, tmp_path):
+    # 평가셋에서 고르면 과적합, 학습셋 in-sample 예측으로 고르면 낙관적이다
     metrics = ml.train_and_evaluate(sample_df, sample_df, tmp_path / "pipeline.pkl")
     thresholds = metrics["thresholds"]
 
     assert thresholds["default"]["threshold"] == 0.5
+    assert thresholds["cv"] == ml.THRESHOLD_CV
     assert 0.0 <= thresholds["tuned"]["threshold"] <= 1.0
-    # 학습셋에서 F1을 최대화한 임계값이므로 학습셋 F1은 기본값 이상이어야 한다
-    assert thresholds["tuned"]["f1"] >= thresholds["default"]["f1"] - 1e-9
+
+
+def test_best_f1_threshold_picks_the_separating_cut():
+    y = pd.Series([0, 0, 1, 1])
+    proba = np.array([0.1, 0.2, 0.8, 0.9])
+
+    assert 0.2 < ml._best_f1_threshold(y, proba) <= 0.8
 
 
 def test_sensitivity_without_refits_without_the_column(sample_df, tmp_path):

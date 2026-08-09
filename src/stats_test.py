@@ -7,7 +7,7 @@ import pandas as pd
 from scipy import stats
 
 from .errors import PipelineError
-from .load import CAPITAL_GAIN_CAP, POSITIVE
+from .load import CAPITAL_GAIN_CAP, CAT_COLS, POSITIVE
 
 ALPHA = 0.05  # 유의수준
 # float64가 표현할 수 있는 최소 양수는 약 5e-324라, 그보다 작은 p는 정확히 0.0으로 언더플로된다
@@ -105,9 +105,17 @@ def data_caveats(df_train: pd.DataFrame, df_test: pd.DataFrame) -> dict[str, Any
         if col in role.columns and role[col].sum() > 0
     }
     capped = df_train["capital-gain"].eq(CAPITAL_GAIN_CAP)
+    # handle_unknown="ignore"는 학습에 없던 범주를 전부 0으로 만든다.
+    # 실제로 그런 행이 몇 개인지 세어, 경고만 달아두지 않고 수치로 확인한다
+    unseen_mask = pd.Series(False, index=df_test.index)
+    for col in CAT_COLS:
+        if col in df_train.columns and col in df_test.columns:
+            unseen_mask |= ~df_test[col].isin(set(df_train[col].unique()))
     return {
         # 공식 분할이어도 완전히 같은 행이 양쪽에 있으면 평가가 낙관적으로 치우친다
         "overlap_rows": int(len(df_train.merge(df_test, how="inner"))),
+        "unseen_category_rows": int(unseen_mask.sum()),
+        "test_rows": int(len(df_test)),
         "role_purity": role_purity,
         "capital_gain_cap": CAPITAL_GAIN_CAP,
         "capital_gain_capped": int(capped.sum()),
