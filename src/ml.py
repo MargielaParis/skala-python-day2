@@ -1,4 +1,4 @@
-"""ML Pipeline — 전처리 + 로지스틱 회귀, 평가 지표, 계수 불확실성, joblib 저장·재로딩"""
+"""전처리와 로지스틱 회귀를 묶은 Pipeline. 평가 지표, 계수 불확실성, joblib 저장·재로딩."""
 
 from pathlib import Path
 from typing import Any
@@ -42,15 +42,15 @@ POSITIVE = ">50K"
 # 제외 컬럼: fnlwgt(표본 가중치, 개인 속성이 아님), education(education-num과 1:1 중복)
 DROPPED = ["fnlwgt", "education"]
 # 기준 범주 선정 규칙 — 리포트에 그대로 싣는다
-REFERENCE_RULE = "각 범주형 변수에서 학습 표본이 가장 많은 범주 (동수면 사전순 앞)"
+REFERENCE_RULE = "학습 표본이 가장 많은 범주(동수면 사전순 앞)"
 ALPHA = 0.05  # 계수 신뢰구간의 유의수준
 THRESHOLD_CV = 5  # 임계값 탐색용 교차검증 분할 수
 
 
 def reference_values(df: pd.DataFrame, cat_cols: list[str] | None = None) -> np.ndarray:
-    # 기준 범주를 표본 최다 범주로 고른다.
-    # drop="first"(사전순)는 native-country=Cambodia(학습 18행)처럼 극소 표본을 기준으로 잡아
-    # 나머지 40개 범주의 대비를 전부 불안정하게 만든다. 동수일 때는 사전순으로 확정한다.
+    # 각 범주형 변수에서 표본이 가장 많은 범주를 기준으로 고른다.
+    # 표본이 극히 적은 범주가 기준이 되면 나머지 대비가 모두 불안정해진다.
+    # 동수일 때는 사전순으로 확정해 실행마다 같은 기준이 나오게 한다.
     refs = []
     for col in CAT_COLS if cat_cols is None else cat_cols:
         counts = df[col].value_counts()
@@ -91,16 +91,15 @@ def _design_matrix(model: Pipeline, X: pd.DataFrame) -> np.ndarray:
 def coefficient_stats(model: Pipeline, X_train: pd.DataFrame, alpha: float = ALPHA) -> pd.DataFrame:
     # 계수와 오즈비에 표준오차·신뢰구간을 붙인다.
     #
-    # LogisticRegression은 기본이 L2 정규화라 순수 최대우도 추정이 아니다. 여기서는 정규화를
-    # 분산 C인 가우시안 사전분포로 보고, 사후분포를 최빈값 주변에서 정규근사(라플라스 근사)한
-    # 표준오차를 쓴다. 사후 정밀도 = Z'WZ + (1/C)I 이고 절편은 정규화하지 않는다.
-    # 따라서 아래 구간은 정확한 Wald 신뢰구간이 아니라 "이 정도로는 단정할 수 없다"를 보여주는
-    # 근사 구간이다. 정규화 때문에 계수 자체도 0 쪽으로 수축돼 있다.
+    # LogisticRegression은 기본이 L2 정규화라 순수 최대우도 추정이 아니다. 정규화를 분산 C인
+    # 가우시안 사전분포로 보고 사후분포를 최빈값 주변에서 정규근사(라플라스 근사)한 표준오차를 쓴다.
+    # 사후 정밀도는 Z'WZ + (1/C)I이고 절편은 정규화하지 않는다. 따라서 아래 구간은 정확한 Wald
+    # 신뢰구간이 아니고, 정규화 때문에 계수 자체도 0 쪽으로 수축돼 있다.
     clf = model.named_steps["clf"]
     Z = _design_matrix(model, X_train)
     design = np.hstack([np.ones((Z.shape[0], 1)), Z])  # 절편 포함
 
-    # 전처리를 거친 확률이어야 하므로 clf가 아니라 Pipeline 전체에 원본을 넣는다
+    # 원본 컬럼을 받는 것은 Pipeline이므로 clf가 아니라 model에 넣는다
     prob = model.predict_proba(X_train)[:, 1]
     weights = prob * (1.0 - prob)
     penalty = np.eye(design.shape[1]) / clf.C
@@ -183,11 +182,10 @@ def threshold_analysis(
     y_test: pd.Series,
     cv: int = THRESHOLD_CV,
 ) -> dict[str, Any]:
-    # 기본 임계값 0.5는 자의적이다. F1을 최대화하는 임계값을 따로 찾는다.
-    #
+    # 기본 임계값 0.5는 자의적이라 F1을 최대화하는 값을 따로 찾는다.
     # 평가셋에서 고르면 평가셋에 대한 과적합이고, 학습셋 예측으로 고르면 모델이 이미 그 데이터에
-    # 적합돼 있어 낙관적이다. 그래서 교차검증 out-of-fold 확률로 고른다 —
-    # 각 행의 확률이 그 행을 보지 못한 모델에서 나오므로 "처음 보는 데이터"에 가장 가깝다.
+    # 적합돼 있어 낙관적이다. 교차검증 out-of-fold 확률은 각 행을 보지 못한 모델에서 나오므로
+    # 처음 보는 데이터에 가장 가깝다.
     try:
         oof = cross_val_predict(clone(model), X_train, y_train, cv=cv, method="predict_proba")[:, 1]
     except ValueError as e:
@@ -233,18 +231,17 @@ def fit_score(
 def compare_strategies(
     train_sets: dict[str, pd.DataFrame], df_test: pd.DataFrame
 ) -> dict[str, Any]:
-    # 결측 처리 방식 A/B 비교. 전략마다 학습셋은 다르지만 **평가셋은 하나로 고정한다**.
-    # 전략별 평가셋을 따로 쓰면 행 수(15,055 vs 16,276)와 사례 구성이 달라져
-    # 정확도·F1을 나란히 놓고 비교할 수 없다.
+    # 결측 처리 방식 A/B 비교. 전략마다 학습셋은 다르지만 평가셋은 하나로 고정한다.
+    # 전략별 평가셋을 따로 쓰면 행 수와 사례 구성이 달라져 지표를 나란히 놓고 비교할 수 없다.
     return {name: fit_score(tr, df_test)[3] for name, tr in train_sets.items()}
 
 
 def sensitivity_without(
     df_train: pd.DataFrame, df_test: pd.DataFrame, excluded: str, focus: str = "sex"
 ) -> dict[str, Any]:
-    # 특정 범주형 변수를 빼고 다시 학습해, 관심 변수의 계수가 얼마나 달라지는지 본다.
-    # relationship(Husband/Wife)은 sex와 거의 겹치므로 성별 계수가 이 통제에 얼마나 의존하는지
-    # 확인하지 않으면 "성별 격차"로 오독하기 쉽다.
+    # 특정 범주형 변수를 빼고 다시 학습해 관심 변수의 계수가 얼마나 달라지는지 본다.
+    # relationship(Husband/Wife)은 sex와 거의 겹치므로, 통제 의존도를 확인하지 않으면
+    # 성별 계수를 성별 격차로 오독하기 쉽다.
     cat_cols = [c for c in CAT_COLS if c != excluded]
     model, _, _, metrics = fit_score(df_train, df_test, cat_cols)
     coef = coefficient_stats(model, split_xy(df_train, cat_cols)[0])

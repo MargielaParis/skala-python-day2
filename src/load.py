@@ -1,4 +1,4 @@
-"""데이터 준비 — Pandas·Polars 로딩 비교·동등성 검증, 결측치·중복 처리, 기본 EDA"""
+"""데이터 준비. Pandas·Polars 로딩 비교와 동등성 검증, 결측치·중복 처리."""
 
 import time
 from pathlib import Path

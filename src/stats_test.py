@@ -1,4 +1,4 @@
-"""통계 분석 — 기술통계, 상관계수, t-test(p-value·효과크기), 성별×소득 카이제곱"""
+"""기술통계, 상관계수, Welch t-test와 효과크기, 성별과 소득의 카이제곱 검정."""
 
 from typing import Any
 
@@ -106,7 +106,7 @@ def data_caveats(df_train: pd.DataFrame, df_test: pd.DataFrame) -> dict[str, Any
     }
     capped = df_train["capital-gain"].eq(CAPITAL_GAIN_CAP)
     # handle_unknown="ignore"는 학습에 없던 범주를 전부 0으로 만든다.
-    # 실제로 그런 행이 몇 개인지 세어, 경고만 달아두지 않고 수치로 확인한다
+    # 주의 문구로만 두지 않고 실제 해당 행 수를 센다
     unseen_mask = pd.Series(False, index=df_test.index)
     for col in CAT_COLS:
         if col in df_train.columns and col in df_test.columns:
@@ -132,8 +132,9 @@ def chisq_sex_income(df: pd.DataFrame) -> dict[str, Any]:
     if table.shape[0] < 2 or table.shape[1] < 2:
         raise PipelineError("카이제곱 교차표가 2x2 미만입니다. sex/income 값을 확인하세요.")
 
-    # Yates 연속성 보정은 기대빈도가 작은 2x2를 위한 보수적 장치다. 이 데이터는 최소 기대빈도가
-    # 2,400을 넘어 보정이 불필요하고, 보정하면 chi2와 Cramer's V가 실제보다 낮게 잡힌다.
+    # Yates 연속성 보정은 기대빈도가 작은 2x2를 위한 장치다. 이 데이터는 기대빈도가 충분히 커서
+    # 보정이 불필요하고, 보정하면 chi2와 Cramer's V가 실제보다 낮게 잡힌다.
+    # 판단 근거로 쓰도록 최소 기대빈도를 함께 반환한다.
     expected_min = float(stats.chi2_contingency(table).expected_freq.min())
     chi2, p, dof, _ = stats.chi2_contingency(table, correction=False)
     n = int(table.to_numpy().sum())

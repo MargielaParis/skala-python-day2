@@ -1,4 +1,4 @@
-"""시각화 — Seaborn 정적 차트(PNG), Plotly 인터랙티브 차트(HTML)"""
+"""시각화. Seaborn 정적 차트(PNG)와 Plotly 인터랙티브 차트(HTML)."""
 
 from pathlib import Path
 from typing import Literal

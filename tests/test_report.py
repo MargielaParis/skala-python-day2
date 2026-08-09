@@ -136,14 +136,14 @@ def test_conclusion_odds_ratio_follows_coefficient(report_inputs, tmp_path):
     md_before = _render(report_inputs, tmp_path, "before.md")
     coef = report_inputs["ml"]["coef"]
     sex_row = next(name for name in coef.index if name.startswith("sex_"))
-    original = f"오즈 {coef.loc[sex_row, 'odds_ratio']:.3f}배"
+    original = f"대비 {coef.loc[sex_row, 'odds_ratio']:.3f}배"
     assert original in md_before
 
     changed = copy.deepcopy(report_inputs)
     changed["ml"]["coef"].loc[sex_row, "odds_ratio"] = 0.123
     md_after = _render(changed, tmp_path, "after.md")
 
-    assert "오즈 0.123배" in md_after
+    assert "대비 0.123배" in md_after
     assert original not in md_after
 
 
