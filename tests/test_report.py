@@ -212,6 +212,16 @@ def test_strategy_verdict_names_a_winner_when_gap_is_real(report_inputs, tmp_pat
     assert "가장 높았다" in md
 
 
+def test_report_carries_the_opinion_sections(report_inputs, tmp_path):
+    # 팀·개인 의견은 고정 문장이므로 자동 계산 결과가 아니라는 점을 함께 밝혀야 한다
+    md = _render(report_inputs, tmp_path)
+
+    assert "## 6. 팀 의견" in md
+    assert "## 7. 개인 의견" in md
+    assert "자동 계산 결과가 아니라" in md
+    assert md.index("## 6. 팀 의견") < md.index("## 7. 개인 의견")
+
+
 def test_report_compares_missing_value_strategies(report_inputs, tmp_path):
     md = _render(report_inputs, tmp_path)
 
