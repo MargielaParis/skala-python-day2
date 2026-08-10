@@ -1,0 +1,103 @@
+name: Vault Push Audit Fallback
+
+on:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  record:
+    if: github.repository_owner == 'MargielaParis' && github.repository != 'MargielaParis/Obsidian' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait for the local recorder
+        run: sleep 30
+
+      - name: Create a missing Vault audit issue
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.OBSIDIAN_PUSH_AUDIT_TOKEN }}
+          script: |
+            const crypto = require('crypto');
+            const target = { owner: 'MargielaParis', repo: 'Obsidian' };
+            const payload = context.payload;
+            const before = payload.before.toLowerCase();
+            const after = payload.after.toLowerCase();
+            const ref = payload.ref;
+            const repository = payload.repository.full_name;
+            const eventId = crypto
+              .createHash('sha256')
+              .update([repository, ref, before, after].join('\0'))
+              .digest('hex');
+
+            const recent = await github.rest.issues.listForRepo({
+              ...target,
+              state: 'all',
+              labels: 'push-log',
+              per_page: 100,
+              sort: 'created',
+              direction: 'desc'
+            });
+            if (recent.data.some(issue => issue.body?.includes(eventId))) {
+              core.info(`Audit issue already exists for ${eventId}`);
+              return;
+            }
+
+            const commits = (payload.commits || []).slice(0, 50).map(commit => ({
+              sha: commit.id.toLowerCase(),
+              title: String(commit.message || '').split(/\r?\n/, 1)[0].replace(/[\u0000-\u001f\u007f]/g, ' ').trim().slice(0, 200)
+            }));
+            const changed = new Set();
+            for (const commit of payload.commits || []) {
+              for (const file of [...(commit.added || []), ...(commit.removed || []), ...(commit.modified || [])]) changed.add(file);
+            }
+            const summary = commits.slice(0, 5).map(commit => commit.title).filter(Boolean);
+            if (!summary.length) summary.push(after === '0000000000000000000000000000000000000000' ? `Delete ${ref}` : `Update ${ref}`);
+            const pushedAt = new Date().toISOString();
+            const seoul = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString().replace('Z', '+09:00');
+            const event = {
+              schemaVersion: 1,
+              eventId,
+              repository,
+              ref,
+              before,
+              after,
+              pushedAt,
+              pushedAtSeoul: seoul,
+              actor: context.actor,
+              executionDevice: 'github-actions',
+              requestDevice: 'unknown',
+              agent: 'github-actions',
+              summary,
+              commits,
+              commitCount: Number.isInteger(payload.size) ? payload.size : commits.length,
+              diffstat: { files: changed.size, insertions: null, deletions: null },
+              prUrl: null
+            };
+            const shortRef = ref.replace(/^refs\/(heads|tags)\//, '');
+            const commitLines = commits.length
+              ? commits.map(commit => `- \`${commit.sha.slice(0, 7)}\` ${commit.title}`).join('\n')
+              : '- 없음';
+            const body = [
+              '## Push', '',
+              `- Repository: [${repository}](https://github.com/${repository})`,
+              `- Ref: \`${ref}\``,
+              `- Before: \`${before}\``,
+              `- After: \`${after}\``,
+              `- Pushed: ${seoul} (${pushedAt})`,
+              `- Actor: \`${context.actor}\``,
+              '- Execution device: `github-actions`',
+              '- Request device: `unknown`',
+              '- Agent: `github-actions`', '',
+              '## Summary', '', ...summary.map(item => `- ${item}`), '',
+              `## Commits (${commits.length}/${event.commitCount})`, '', commitLines, '',
+              '## Diffstat', '', `- ${changed.size} files, +unknown, -unknown`, '',
+              '<!-- push-event-v1', JSON.stringify(event, null, 2), '-->', ''
+            ].join('\n');
+            await github.rest.issues.create({
+              ...target,
+              title: `[push] ${repository} · ${shortRef} · ${after.slice(0, 7)}`,
+              body,
+              labels: ['push-log', 'state:inbox']
+            });
